@@ -279,8 +279,18 @@ QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", None)
 QDRANT_URL = os.getenv("QDRANT_URL", None)
 QDRANT_COLLECTION_NAME = os.getenv(
     "QDRANT_COLLECTION_NAME",
-    _get_nested(_PARAMS, "qdrant", "collection_name", default="ZuuSwarm_AI"),
+    _get_nested(_PARAMS, "qdrant", "collection_name", default="procedural-memory-runbooks"),
 )
+
+# ========================================
+# AWS S3 Storage
+# ========================================
+
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
+AWS_S3_BUCKET_NAME = os.getenv("AWS_S3_BUCKET_NAME")
+AWS_S3_PREFIX = os.getenv("AWS_S3_PREFIX", "raw/")
 
 # ========================================
 # Logging & Observability (from param.yaml)

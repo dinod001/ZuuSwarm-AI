@@ -128,7 +128,7 @@ observability:
 # ============================================================================
 qdrant:
   # Collection name for RAG chunks
-  collection_name: ZuuSwarm_AI
+  collection_name: procedural-memory-runbooks
   # Note: QDRANT_API_KEY and QDRANT_URL must be set in .env file
 
 # ============================================================================

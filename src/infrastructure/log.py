@@ -25,6 +25,18 @@ _FILE_FORMAT = (
 
 _VALID_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
+_NOISY_LOGGERS = (
+    "boto3",
+    "botocore",
+    "urllib3",
+    "s3transfer",
+)
+
+
+def _patch_record(record: dict) -> None:
+    """Ensure stdlib/intercepted logs always have extra[name] for our format."""
+    record["extra"].setdefault("name", record["name"])
+
 
 def _resolve_level(default: str = "INFO") -> str:
     level = get_log_level()
@@ -45,7 +57,7 @@ class _InterceptHandler(logging.Handler):
             frame = frame.f_back
             depth += 1
 
-        logger.opt(depth=depth, exception=record.exc_info).log(
+        logger.bind(name=record.name).opt(depth=depth, exception=record.exc_info).log(
             level, record.getMessage()
         )
 
@@ -66,6 +78,7 @@ def setup_logging(
     diagnose = console_level == "DEBUG"
 
     logger.remove()
+    logger.configure(patcher=_patch_record)
 
     logger.add(
         sys.stderr,
@@ -94,6 +107,9 @@ def setup_logging(
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "fastapi"):
         logging.getLogger(name).handlers = [_InterceptHandler()]
         logging.getLogger(name).propagate = False
+
+    for name in _NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
     _CONFIGURED = True
 
