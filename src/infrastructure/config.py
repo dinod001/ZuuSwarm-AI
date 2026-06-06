@@ -176,6 +176,7 @@ EMBEDDING_SHOW_PROGRESS = _get_nested(_PARAMS, "embedding", "show_progress", def
 DATA_DIR = _PROJECT_ROOT / _get_nested(_PARAMS, "paths", "data_dir", default="data")
 KB_DIR = _PROJECT_ROOT / _get_nested(_PARAMS, "paths", "kb_dir", default="data/historical_transcripts")
 LOGS_DIR = _PROJECT_ROOT / _get_nested(_PARAMS, "paths", "logs_dir", default="logs")
+NOTEBOOKS_DIR = _PROJECT_ROOT / _get_nested(_PARAMS, "paths", "notebooks_dir", default="data/notebooks")
 
 # Alternative ingestion sources (used by pipeline.py loader map)
 JSONL_DIR = DATA_DIR / "jsonl"

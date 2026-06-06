@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
+import re
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -144,3 +144,50 @@ class S3Client:
         except (BotoCoreError, ClientError) as exc:
             log.error("Failed to upload {}: {}", transcript_id, exc)
             return False
+    
+    def load_json_objects(self) -> list[dict[str, Any]]:
+        data=[]
+
+        """geeting latest JSON objects from S3."""
+        s3_client = self._get_client()
+
+        # lsit all folders under raw/ prefix and get the latest one
+        response = s3_client.list_objects_v2(
+            Bucket=self.bucket,
+            Prefix="raw/",
+        )
+        if response.get("Contents") is None:
+            log.warning("No JSON files found to upload in {}", self.source_dir)
+            return []
+        
+        # sort by last modified date
+        response["Contents"].sort(key=lambda x: x["LastModified"])
+        latest_folder = response["Contents"][-1]["Key"]
+        log.info("Latest folder: {}", latest_folder)
+
+        # return all json files withing that folder and append the file name as welll to body
+        files = [item["Key"] for item in response["Contents"] if item["Key"].endswith(".json")]
+        log.info("Found {} JSON file(s) in {}", len(files), latest_folder)
+
+        count=0
+
+        for file in files:
+            count+=1
+            response = s3_client.get_object(Bucket=self.bucket, Key=file)
+
+            json_data = json.load(response["Body"])
+
+            # Add source file name
+            json_data["source_file"] = re.search(r'([^/]+\.json)$', file).group(1)
+
+            data.append(json_data)
+            log.info("Loaded {}", file)
+            if count==3:
+                break
+
+        return data
+        
+        
+        
+       
+

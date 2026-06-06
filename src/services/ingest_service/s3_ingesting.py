@@ -59,6 +59,13 @@ def ingest_transcripts_to_s3() -> bool:
     log.info("Ingest complete: {} transcript(s) uploaded", len(files))
     return True
 
-if __name__ == "__main__":
-    success = ingest_transcripts_to_s3()
-    raise SystemExit(0 if success else 1)
+# if __name__ == "__main__":
+#     client = S3Client()
+#     data = client.load_json_objects()
+#     # saving as json file
+#     for item in data:
+#         with open(f"data/{item['transcript_id']}.json", "w") as f:
+#             json.dump(item, f, indent=4)
+#         log.info("Saved {}", item['transcript_id'])
+
+    
