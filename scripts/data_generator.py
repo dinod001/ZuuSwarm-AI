@@ -1,3 +1,4 @@
+from typing import Any
 import json
 import os
 import sys
@@ -50,7 +51,7 @@ class DistilledIncidentSchema(BaseModel):
         description="Name of the source file where data was stored"
     )
 
-def generate_distilled_data_s3():
+def generate_distilled_data_s3()-> list[dict[str, Any]]:
     logger.info("Initializing S3 Client...")
     s3_client = S3Client()
     
@@ -78,17 +79,10 @@ def generate_distilled_data_s3():
         except Exception as e:
             logger.error(f"Error processing {source_file}: {e}")
 
-    # Save to data folder
-    os.makedirs("data", exist_ok=True)
-    output_file = "data/distilled_incidents.json"
-    logger.info(f"Saving extracted data to {output_file}...")
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=4, ensure_ascii=False)
-        
-    logger.success(f"Saved {len(results)} records to {output_file}")
+    return results
 
 # markdown files from data/notebooks
-def generate_distilled_data_local():
+def generate_distilled_data_local() -> list[dict[str, Any]]:
     # loading makrdown files from notebooks folder
     # get files from NOTEBOOKS_DIR
     files = list(NOTEBOOKS_DIR.glob("*.md"))
@@ -121,15 +115,4 @@ def generate_distilled_data_local():
             except Exception as e:
                 logger.error(f"Error processing {file.name}: {e}")
 
-    # Save to data folder
-    os.makedirs("data", exist_ok=True)
-    output_file = "data/distilled_incidents_local.json"
-    logger.info(f"Saving extracted data to {output_file}...")
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=4, ensure_ascii=False)
-        
-    logger.success(f"Saved {len(results)} records to {output_file}")
-
-if __name__ == "__main__":
-    # You can change this to generate_distilled_data_local() to run the local one
-    generate_distilled_data_local()
+    return results
