@@ -45,7 +45,11 @@ def ingest_transcripts_to_s3() -> bool:
 
     log.info("Starting ingest for {} transcript file(s)", len(files))
 
+    count = 1
     for file_path in files:
+        if count > 5:
+            break
+        count += 1
         data = load_transcript(file_path)
         transcript_id = validate_transcript(data, file_path)
         if not transcript_id:
@@ -55,7 +59,7 @@ def ingest_transcripts_to_s3() -> bool:
 
         if not client.upload_transcript(data):
             return False
-
+        
     log.info("Ingest complete: {} transcript(s) uploaded", len(files))
     return True
 

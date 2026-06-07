@@ -33,6 +33,7 @@ from infrastructure.config import (
     QDRANT_API_KEY,
     QDRANT_URL,
     QDRANT_COLLECTION_NAME,
+    CAG_COLLECTION_NAME,
     EMBEDDING_DIM,
 )
 # ---------------------------------------------------------------------------
@@ -135,6 +136,7 @@ def collection_info(collection_name: str = QDRANT_COLLECTION_NAME) -> Dict[str, 
 # Upsert
 # ---------------------------------------------------------------------------
 
+# upserting for main collection
 
 def upsert_chunks(
     chunks: List[Dict[str, Any]],
@@ -171,6 +173,9 @@ def upsert_chunks(
     client = get_qdrant_client()
     total = 0
 
+    # Check if collections alraedy exist 
+    ensure_collection(collection_name, EMBEDDING_DIM)
+
     for i in range(0, len(chunks), batch_size):
         batch_chunks = chunks[i : i + batch_size]
         batch_embeds = embeddings[i : i + batch_size]
@@ -180,7 +185,76 @@ def upsert_chunks(
             point_id = str(uuid.uuid4())
             payload = {
                 "chunk_text": chunk.get("chunk_text", ""),
-                "ticket_id": chunk.get("ticket_id", ""),
+                "problem": chunk.get("problem", ""),
+                "root_cause": chunk.get("root_cause", ""),
+                "resolution": chunk.get("resolution", ""),
+                "tier": chunk.get("tier", 0),
+                "source_file":chunk.get("source_file", ""),
+                "chunk_index":chunk.get("chunk_index", 0),
+            }
+            # Include any extra metadata
+            for k, v in chunk.items():
+                if k not in ("text", "url", "title", "strategy", "chunk_index"):
+                    payload[k] = v
+
+            points.append(PointStruct(id=point_id, vector=vec, payload=payload))
+
+        client.upsert(collection_name=collection_name, points=points)
+        total += len(points)
+        logger.debug("Upserted batch {}–{} ({} points)", i, i + len(points), len(points))
+
+    logger.info("Upserted {} points into '{}'", total, collection_name)
+    return total
+
+# upserting for CAG collection
+
+def upsert_cag_chunks(
+    chunks: List[Dict[str, Any]],
+    embeddings: List[List[float]],
+    collection_name: str = CAG_COLLECTION_NAME,
+    batch_size: int = 100,
+) -> int:
+    """
+    Upsert document chunks (with embeddings) into Qdrant.
+
+    Each chunk dict is expected to contain at least:
+        - text (str): The chunk content.
+        - url (str): Source URL.
+        - title (str): Source document title.
+        - strategy (str): Chunking strategy used.
+        - chunk_index (int): Position in the original document.
+
+    Any extra keys are stored as payload metadata.
+
+    Args:
+        chunks: List of chunk dictionaries.
+        embeddings: Parallel list of embedding vectors.
+        collection_name: Target collection.
+        batch_size: Points per upsert call.
+
+    Returns:
+        Number of points upserted.
+    """
+    if len(chunks) != len(embeddings):
+        raise ValueError(
+            f"Mismatch: {len(chunks)} chunks vs {len(embeddings)} embeddings"
+        )
+
+    client = get_qdrant_client()
+    total = 0
+
+    # Check if collections alraedy exist 
+    ensure_collection(collection_name, EMBEDDING_DIM)
+
+    for i in range(0, len(chunks), batch_size):
+        batch_chunks = chunks[i : i + batch_size]
+        batch_embeds = embeddings[i : i + batch_size]
+
+        points = []
+        for chunk, vec in zip(batch_chunks, batch_embeds):
+            point_id = str(uuid.uuid4())
+            payload = {
+                "chunk_text": chunk.get("chunk_text", ""),
                 "problem": chunk.get("problem", ""),
                 "root_cause": chunk.get("root_cause", ""),
                 "resolution": chunk.get("resolution", ""),
@@ -255,7 +329,6 @@ def search_chunks(
         payload = hit.payload or {}
         result = {
             "chunk_text": payload.get("chunk_text", ""),
-            "ticket_id": payload.get("ticket_id", ""),
             "problem": payload.get("problem", ""),
             "root_cause": payload.get("root_cause", ""),
             "resolution": payload.get("resolution", ""),
