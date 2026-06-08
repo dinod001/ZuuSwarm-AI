@@ -36,7 +36,9 @@ class DistilledIncidentSchema(BaseModel):
         description="The underlying technical reason or configuration failure that caused the problem."
     )
     resolution: str = Field(
-        description="The exact step-by-step technical fix, terminal commands, or mitigation steps applied to resolve the issue."
+        description="The resolution of the issue. IMPORTANT: "
+            "If Tier is 1, this MUST be a friendly human support message starting with 'Hi there! I can help you with that...'. "
+            "If Tier is 2, 3, or 4, this MUST be the exact step-by-step technical fix, terminal commands, or mitigation steps."
     )
     tier: int = Field(
         description=(

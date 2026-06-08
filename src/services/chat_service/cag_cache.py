@@ -207,7 +207,7 @@ class CAGCache:
                     logger.warning("Failed to delete expired CAG entry: {}", exc)
                 return None
 
-        cached_query = payload.get("query", "")
+        cached_query = payload.get("problem", "")
         logger.info(
             "CAG cache HIT (sim={:.3f}): '{}' → matched '{}'",
             similarity,
@@ -219,7 +219,7 @@ class CAGCache:
 
         return {
             "query": cached_query,
-            "answer": payload.get("answer", ""),
+            "answer": payload.get("resolution", ""),
             "source_file": source_file,
             "ts": float(payload.get("ts", 0)),
             "score": similarity,
@@ -266,8 +266,8 @@ class CAGCache:
 
         point_id = str(uuid.uuid4())
         payload = {
-            "query": query,
-            "answer": response.get("answer", ""),
+            "problem": query,
+            "resolution": response.get("answer", ""),
             "source_file": response.get("source_file", []),
             "ts": time.time(),
         }

@@ -76,30 +76,21 @@ class QdrantRetriever(BaseRetriever):
         # Convert to LangChain Documents
         # For parent-child: use parent_text as page_content (richer context for LLM)
         # while keeping the child text in metadata for reference.
+        docs: List[Document] = []
         seen_parents: set = set()
-        docs = []
         for hit in hits:
-            parent_text = hit.get("parent_text")
-            parent_id = hit.get("parent_id")
-
-            # Deduplicate by parent_id so the LLM doesn't see the same
-            # parent passage multiple times when several children match.
-            if parent_id and parent_id in seen_parents:
-                continue
-            if parent_id:
-                seen_parents.add(parent_id)
-
-            page_content = parent_text if parent_text else hit["chunk_text"]
+            page_content = hit.get("chunk_text", "")
             docs.append(
                 Document(
                     page_content=page_content,
                     metadata={
-                        "url": hit.get("url", ""),
-                        "title": hit.get("title", ""),
-                        "strategy": hit.get("strategy", ""),
+                        "source_file": hit.get("source_file", ""),
+                        "tier": hit.get("tier", 0),
                         "chunk_index": hit.get("chunk_index", 0),
                         "score": hit.get("score", 0.0),
-                        "child_text": hit["chunk_text"],
+                        "problem": hit.get("problem", ""),
+                        "root_cause": hit.get("root_cause", ""),
+                        "resolution": hit.get("resolution", ""),
                     },
                 )
             )
