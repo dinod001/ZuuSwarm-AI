@@ -12,6 +12,15 @@ Pipeline:
 from loguru import logger
 from typing import Any, Dict, List
 import time
+from pathlib import Path
+import sys
+from dotenv import load_dotenv
+load_dotenv()
+# Add project root and src directory to sys.path
+project_root = str(Path(__file__).resolve().parent.parent.parent.parent)
+src_dir = str(Path(project_root) / "src")
+sys.path.insert(0, project_root)
+sys.path.insert(0, src_dir)
 
 from services.chat_service.cag_cache import CAGCache
 from services.chat_service.crag_service import CRAGService
@@ -155,3 +164,30 @@ class CAGService:
 
 
 __all__ = ["CAGService"]
+
+if __name__ == "__main__":
+    from infrastructure.llm.llm_provider import get_chat_llm
+    from infrastructure.llm.embeddings import get_default_embeddings
+    from services.chat_service.rag_service import QdrantRetriever
+    
+    logger.info("Initializing dependencies for testing CAG Service...")
+    embedder = get_default_embeddings()
+    llm = get_chat_llm()
+    retriever = QdrantRetriever(embedder=embedder)
+    
+    crag = CRAGService(retriever=retriever, llm=llm)
+    cag_cache = CAGCache(embedder=embedder)
+    
+    client = CAGService(crag_service=crag, cache=cag_cache)
+    
+    while True:
+        query = input("\nEnter your query (or 'quit' to exit): ")
+        if query.lower() in ('quit', 'exit', 'q'):
+            break
+        response = client.generate(query)
+        print("\n=== RESPONSE ===")
+        print(response.get("answer", ""))
+        print("\n=== METADATA ===")
+        print(f"Cache Hit: {response.get('cache_hit')}")
+        print(f"Source Files: {response.get('source_file')}")
+        print(f"Generation Time: {response.get('generation_time', 0):.2f}s")
