@@ -114,3 +114,24 @@ class IncidentHistoryResponse(BaseModel):
     resolution_notes: Optional[str] = None
     root_cause: Optional[str] = None
     resolution_time_minutes: Optional[int] = None
+
+
+class TicketStatusResponse(BaseModel):
+    """Structured response for ticket status queries."""
+    id: str
+    issue_description: str
+    ticket_type: Optional[str] = None
+    severity: Optional[str] = None
+    status: Optional[str] = None
+    assigned_to: Optional[str] = None
+    reported_by: Optional[str] = None
+    resolution_notes: Optional[str] = None
+    created_at: Optional[str] = None
+    resolved_at: Optional[str] = None
+
+
+class PerformActionRequest(BaseModel):
+    """Validates input for performing a system action and resolving a ticket."""
+    ticket_id: str = Field(..., min_length=1, max_length=50)
+    action_type: str = Field(..., min_length=1, max_length=100)
+    resolution_notes: str = Field(..., min_length=1, max_length=5000)

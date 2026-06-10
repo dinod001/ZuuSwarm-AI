@@ -13,9 +13,11 @@ from infrastructure.db.sql_client import get_sql_engine
 from infrastructure.db.crm_models import (
     SaveTicketRequest,
     UpdateTicketRequest,
+    PerformActionRequest,
     AssetStatusResponse,
     ServiceHealthResponse,
     IncidentHistoryResponse,
+    TicketStatusResponse,
 )
 
 
@@ -118,6 +120,49 @@ def save_live_ticket(
 
     except Exception as e:
         logger.error(f"❌ Failed to create ticket {ticket_id}: {e}")
+        raise
+
+
+def get_ticket_status(ticket_id: str) -> Optional[TicketStatusResponse]:
+    """
+    Retrieve a ticket's current status and details.
+
+    Used by L1/L2/L3 agents to check ticket progress.
+
+    Args:
+        ticket_id: Ticket ID (e.g. 'TKT-00042')
+
+    Returns:
+        TicketStatusResponse or None if not found
+    """
+    if not ticket_id or not isinstance(ticket_id, str):
+        raise ValueError("ticket_id must be a non-empty string")
+
+    engine = get_sql_engine()
+
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("""
+                    SELECT id, issue_description, ticket_type, severity,
+                           status, assigned_to, reported_by,
+                           resolution_notes,
+                           created_at::text, resolved_at::text
+                    FROM live_tickets
+                    WHERE id = :ticket_id
+                """),
+                {"ticket_id": ticket_id},
+            )
+            row = result.mappings().fetchone()
+
+        if row is None:
+            logger.info(f"Ticket '{ticket_id}' not found")
+            return None
+
+        return TicketStatusResponse(**row)
+
+    except Exception as e:
+        logger.error(f"❌ Failed to get ticket status for '{ticket_id}': {e}")
         raise
 
 
@@ -329,5 +374,78 @@ def check_incident_history(
     except Exception as e:
         logger.error(
             f"❌ Failed to check incident history for '{affected_service}': {e}"
+        )
+        raise
+
+
+# ---------------------------------------------------------------------------
+# System action operations (L3 Agent)
+# ---------------------------------------------------------------------------
+
+
+def perform_system_action(
+    ticket_id: str,
+    action_type: str,
+    resolution_notes: str,
+) -> bool:
+    """
+    Execute a system-level action and resolve the associated ticket.
+
+    Used by the L3 Agent to apply a fix (restart, reset, config change, etc.)
+    and mark the ticket as resolved in a single operation.
+
+    Args:
+        ticket_id:        Ticket ID to resolve
+        action_type:      Type of action taken (e.g. 'restart_service',
+                          'reset_credentials', 'scale_resources')
+        resolution_notes: Description of what was done
+
+    Returns:
+        True if the action was logged and ticket resolved
+
+    Raises:
+        ValueError: If input validation fails
+    """
+    # Validate input
+    req = PerformActionRequest(
+        ticket_id=ticket_id,
+        action_type=action_type,
+        resolution_notes=resolution_notes,
+    )
+
+    engine = get_sql_engine()
+
+    try:
+        # Log the action and resolve the ticket in one transaction
+        full_notes = f"[{req.action_type}] {req.resolution_notes}"
+
+        with engine.begin() as conn:
+            result = conn.execute(
+                text("""
+                    UPDATE live_tickets
+                    SET status = 'resolved',
+                        resolution_notes = :resolution_notes,
+                        resolved_at = NOW()
+                    WHERE id = :ticket_id
+                """),
+                {
+                    "resolution_notes": full_notes,
+                    "ticket_id": req.ticket_id,
+                },
+            )
+
+        if result.rowcount == 0:
+            logger.warning(f"⚠️ Ticket {ticket_id} not found for action")
+            return False
+
+        logger.info(
+            f"✅ System action '{req.action_type}' executed, "
+            f"ticket {req.ticket_id} resolved"
+        )
+        return True
+
+    except Exception as e:
+        logger.error(
+            f"❌ Failed to perform action on ticket {ticket_id}: {e}"
         )
         raise
