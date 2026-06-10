@@ -246,7 +246,7 @@ def create_episode_from_turns(user_id: str, session_id: str, turns: List[Convers
         summary = f"Conversation with {turn_count} turns from {session_id}"
     
     topic_tags = []
-    keywords = ["medication", "allergy", "appointment", "doctor", "reminder", "pain", "symptom"]
+    keywords = ["ticket", "issue", "server", "access", "deployment", "network", "database", "incident", "latency", "error", "password"]
     conversation_lower = " ".join([t.content.lower() for t in turns])
     for keyword in keywords:
         if keyword in conversation_lower:

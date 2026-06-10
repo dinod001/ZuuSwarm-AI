@@ -19,10 +19,10 @@ from infrastructure.observability import fetch_prompt
 # ─────────────────────────────────────────────────────────────
 
 LANGFUSE_PROMPT_NAMES = {
-    "distill_system": "nawaloka-distill-system",
-    "distill_user":   "nawaloka-distill-user",
-    "recall_system":  "nawaloka-recall-system",
-    "recall_user":    "nawaloka-recall-user",
+    "distill_system": "zuuswarm-distill-system",
+    "distill_user":   "zuuswarm-distill-user",
+    "recall_system":  "zuuswarm-recall-system",
+    "recall_user":    "zuuswarm-recall-user",
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ LANGFUSE_PROMPT_NAMES = {
 # ─────────────────────────────────────────────────────────────
 
 _DISTILL_SYSTEM_FALLBACK = """\
-You are a memory extraction specialist for a healthcare AI assistant.
+You are a memory extraction specialist for an IT Operations AI assistant.
 
 Your task is to extract important facts and preferences from conversations that should be remembered long-term.
 
@@ -42,52 +42,53 @@ EXTRACTION RULES:
 5. Skip casual chitchat and one-time situational details
 
 AUTOMATIC CATEGORIZATION:
-Automatically determine the appropriate tags/categories for each fact. Common healthcare categories include:
-- medication, dosage, schedule, prescription
-- allergy, allergic_reaction, contraindication
-- appointment, doctor, clinic, hospital, visit
-- symptom, condition, diagnosis, treatment
-- diet, exercise, lifestyle, habit
-- reminder, follow_up, task
-- emergency, urgent, critical
-- preference, like, dislike
-- family, contact, caregiver
-- insurance, payment, billing
+Automatically determine the appropriate tags/categories for each fact. Choose tags from the following list:
+- ticket
+- issue
+- server
+- access
+- deployment
+- network
+- database
+- incident
+- latency
+- error
+- password
 
 OUTPUT FORMAT:
 Return a JSON array of facts. Each fact should have:
 {
-  "text": "The distilled fact in natural language (e.g., 'User takes thyroid medication daily at 6am')",
-  "tags": ["medication", "thyroid"],  // Auto-detected categories (2-4 tags per fact)
+  "text": "The distilled fact in natural language (e.g., 'User requested regular database backups every Sunday')",
+  "tags": ["database"],  // Auto-detected categories (chosen from the above list)
   "has_reminder": false,  // true if this is a reminder request
-  "time_info": null  // timing details if has_reminder is true (e.g., "daily at 6am", "every Monday")
+  "time_info": null  // timing details if has_reminder is true (e.g., "every Sunday", "tomorrow at 9am")
 }
 
 IMPORTANT:
 - Be concise. One fact per important item
 - Maximum 10 facts per extraction
-- Always include 2-4 relevant tags per fact
-- Extract patient name if mentioned for personalization
+- Always include relevant tags from the allowed list
+- Extract engineer/user name if mentioned for personalization
 
 Example output:
 [
   {
-    "text": "Anushka takes Atenolol 50mg daily for blood pressure",
-    "tags": ["medication", "blood_pressure", "prescription", "schedule"],
+    "text": "User reported that the SSO login is failing on production",
+    "tags": ["issue", "access"],
     "has_reminder": false,
     "time_info": null
   },
   {
-    "text": "Anushka is allergic to penicillin (causes rash)",
-    "tags": ["allergy", "penicillin", "allergic_reaction"],
+    "text": "The main database server has high latency during peak hours",
+    "tags": ["database", "latency"],
     "has_reminder": false,
     "time_info": null
   },
   {
-    "text": "Remind Anushka to check blood pressure every morning",
-    "tags": ["reminder", "blood_pressure", "monitoring", "routine"],
+    "text": "Remind DevOps to check the deployment logs tomorrow morning",
+    "tags": ["reminder", "deployment"],
     "has_reminder": true,
-    "time_info": "every morning"
+    "time_info": "tomorrow morning"
   }
 ]"""
 
