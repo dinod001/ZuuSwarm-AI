@@ -155,37 +155,14 @@ class RAGTool:
         self._cache.clear()
         logger.info("CAG cache cleared")
 
-    def dispatch(self, action: str, params: Dict[str, Any]) -> str:
-        """
-        Dispatch a RAG action.
 
-        Resilient to router slip-ups: filters kwargs the action doesn't
-        accept (so an extra ``time_frame`` or similar doesn't crash) and
-        gives a useful error string if the query is missing instead of
-        500-erroring.
-        """
-        import inspect
-
-        handlers = {
-            "search": self.search,
-            "cache_stats": lambda: f"CAG cache: {self.cache_stats()}",
-            "clear_cache": lambda: (self.clear_cache(), "CAG cache cleared.")[1],
-        }
-        handler = handlers.get(action)
-        if handler is None:
-            return f"Unknown RAG action: {action}. Available: {list(handlers)}"
-
+    def dispatch(self, action: str, params: dict) -> str:
+        """Dispatch the given action to the appropriate underlying method."""
         if action == "search":
-            sig = inspect.signature(self.search)
-            accepted = {p.name for p in sig.parameters.values()}
-            clean = {k: v for k, v in (params or {}).items() if k in accepted and v is not None}
-            if not clean.get("query"):
-                # The router didn't extract a query — return a clear message
-                # the synth can turn into "what would you like me to search?"
-                return (
-                    "RAG search requires a query string but none was provided. "
-                    "Please rephrase the question with a specific topic."
-                )
-            return self.search(**clean)
-
-        return handler()
+            return self.search(**params)
+        elif action == "cache_stats":
+            return f"CAG cache: {self.cache_stats()}"
+        elif action == "clear_cache":
+            self.clear_cache()
+            return "CAG cache cleared."
+        return f"Unknown action: {action}"
