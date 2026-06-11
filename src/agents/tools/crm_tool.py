@@ -201,3 +201,38 @@ class ActionTool:
         return f"⚠️ Ticket {ticket_id} not found. Action was not applied."
 
 
+# ---------------------------------------------------------------------------
+# 4. Unified CRM Tool
+# ---------------------------------------------------------------------------
+
+
+class CRMTool:
+    """
+    Unified IT Operations CRM Tool that provides a dispatch interface
+    for Ticketing, Observability, and Action tools.
+    """
+
+    def __init__(self):
+        self.ticketing = TicketingTool()
+        self.observability = ObservabilityTool()
+        self.action = ActionTool()
+
+    def dispatch(self, action: str, params: dict) -> str:
+        """Dispatch the given action to the appropriate underlying tool."""
+        if action == "create_ticket":
+            return self.ticketing.create_ticket(**params)
+        elif action == "get_ticket_status":
+            return self.ticketing.get_ticket_status(**params)
+        elif action == "update_ticket":
+            return self.ticketing.update_ticket(**params)
+        elif action == "get_asset_health":
+            return self.observability.get_asset_health(**params)
+        elif action == "check_service_status":
+            return self.observability.check_service_status(**params)
+        elif action == "check_incident_history":
+            return self.action.check_incident_history(**params)
+        elif action == "perform_system_action":
+            return self.action.perform_system_action(**params)
+        return f"Unknown action: {action}"
+
+
