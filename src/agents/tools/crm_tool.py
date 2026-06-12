@@ -18,6 +18,7 @@ from services.crm_service.crm_db_client import (
     check_incident_history,
     perform_system_action,
     update_ticket_status,
+    check_user_clearance,
 )
 
 
@@ -233,6 +234,9 @@ class CRMTool:
             return self.action.check_incident_history(**params)
         elif action == "perform_system_action":
             return self.action.perform_system_action(**params)
+        elif action == "check_user_clearance":
+            clearance = check_user_clearance(**params)
+            return str(clearance) if clearance is not None else "Unknown"
         return f"Unknown action: {action}"
 
 

@@ -19,7 +19,9 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 from dotenv import load_dotenv
-load_dotenv()
+# Subprocess CWD is src/, but .env lives at project root
+_PROJECT_ROOT = os.path.dirname(_SRC)
+load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
 
 from loguru import logger
 from mcp.server.fastmcp import FastMCP

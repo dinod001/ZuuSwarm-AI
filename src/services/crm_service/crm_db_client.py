@@ -6,7 +6,9 @@ Input validation is handled by Pydantic models from crm_models.py.
 """
 
 from typing import Optional
-from loguru import logger
+from infrastructure.log import get_logger
+
+logger = get_logger(__name__)
 from sqlalchemy import text
 
 from infrastructure.db.sql_client import get_sql_engine
@@ -115,7 +117,8 @@ def save_live_ticket(
                 },
             )
 
-        logger.info(f"✅ Ticket {req.ticket_id} created successfully")
+        logger.info(f"✅ Ticket {req.ticket_id} created successfully in Supabase!")
+        logger.info(f"💾 Saved Data: type='{req.ticket_type.value}', severity='{req.severity.value}', reporter='{req.reported_by}', assignee='{req.assigned_to}', issue='{req.issue_description[:50]}...'")
         return req.ticket_id
 
     except Exception as e:
@@ -257,7 +260,7 @@ def check_asset_status(asset_name: str) -> Optional[AssetStatusResponse]:
                     SELECT id, name, asset_type, status,
                            cpu_usage_percent, memory_usage_percent, location
                     FROM assets_inventory
-                    WHERE name = :asset_name
+                    WHERE name ILIKE '%' || :asset_name || '%'
                 """),
                 {"asset_name": asset_name},
             )
@@ -300,7 +303,7 @@ def check_service_health(service_name: str) -> Optional[ServiceHealthResponse]:
                 text("""
                     SELECT id, name, status, owner_division, version
                     FROM services
-                    WHERE name = :service_name
+                    WHERE name ILIKE '%' || :service_name || '%'
                 """),
                 {"service_name": service_name},
             )
@@ -354,7 +357,7 @@ def check_incident_history(
                     SELECT id, title, resolution_notes, root_cause,
                            resolution_time_minutes
                     FROM incident_history
-                    WHERE affected_service = :affected_service
+                    WHERE affected_service ILIKE '%' || :affected_service || '%'
                     ORDER BY resolved_at DESC
                     LIMIT :limit
                 """),
@@ -448,4 +451,44 @@ def perform_system_action(
         logger.error(
             f"❌ Failed to perform action on ticket {ticket_id}: {e}"
         )
+        raise
+
+# ---------------------------------------------------------------------------
+# Employee operations (Access Clearance)
+# ---------------------------------------------------------------------------
+
+
+def check_user_clearance(email: str) -> Optional[int]:
+    """
+    Check an employee's SQL clearance level by their email.
+    
+    Used by the CAG Fastpath to verify authorization for T1 requests.
+    
+    Args:
+        email: Employee email address
+        
+    Returns:
+        Clearance level (1-5) or None if employee not found.
+    """
+    if not email or not isinstance(email, str):
+        raise ValueError("email must be a non-empty string")
+
+    engine = get_sql_engine()
+
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT clearance_level FROM employees WHERE email = :email"),
+                {"email": email},
+            )
+            row = result.scalar()
+
+        if row is None:
+            logger.info(f"Employee with email '{email}' not found")
+            return None
+
+        return int(row)
+
+    except Exception as e:
+        logger.error(f"❌ Failed to check clearance for '{email}': {e}")
         raise

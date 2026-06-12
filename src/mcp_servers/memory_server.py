@@ -28,7 +28,9 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 from dotenv import load_dotenv
-load_dotenv()
+# Subprocess CWD is src/, but .env lives at project root
+_PROJECT_ROOT = os.path.dirname(_SRC)
+load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
 
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
@@ -37,7 +39,7 @@ from memory.st_store import ShortTermMemoryStore
 from memory.lt_store import LongTermMemoryStore
 from memory.memory_ops import MemoryRecaller
 from memory.schemas import ConversationTurn, MemoryFact
-from infrastructure.llm import get_default_embeddings
+from infrastructure.llm.embeddings import get_default_embeddings
 
 
 # ── Server + lazy-initialised stores ────────────────────────────

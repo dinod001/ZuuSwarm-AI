@@ -27,7 +27,9 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 from dotenv import load_dotenv
-load_dotenv()
+# Subprocess CWD is src/, but .env lives at project root
+_PROJECT_ROOT = os.path.dirname(_SRC)
+load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
 
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
@@ -131,6 +133,11 @@ def perform_system_action(
             "resolution_notes": resolution_notes,
         },
     )
+
+@mcp.tool()
+def check_user_clearance(email: str) -> str:
+    """Check an employee's SQL clearance level by their email."""
+    return _get_crm().dispatch("check_user_clearance", {"email": email})
 
 
 # ── Entry point ────────────────────────────────────────────────
