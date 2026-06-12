@@ -97,6 +97,44 @@ graph TD
     MCP_MEM --> DB_SUPA
 ```
 
+### 🔄 Full Incident Resolution Workflow (L1 -> L4 + Voice Agent)
+
+When a user reports an issue (e.g., *"Critical system failure! Website down!"*), the Swarm executes the following flow:
+
+1. **L1 Agent (Triage)**:
+   - Classifies the problem into one of the 4 core ticket types:
+     - **T1 (Access & Identity)**: High volume, low severity (e.g., VPN reset).
+     - **T2 (Asset Provisioning)**: Medium volume, low severity (e.g., Broken laptop).
+     - **T3 (Service Degradation)**: Low volume, medium severity (e.g., Slow API).
+     - **T4 (Critical Outages)**: Rare, critical severity (e.g., Redis OOM).
+   - Inserts the incident into the `live_tickets` table (e.g., `status='open'`, `severity='critical'`, `ticket_type='critical_outage'`).
+   - **Routing Decision**: 
+     - **T1**: Calls the CAG (Cache-Augmented Generation) layer directly for an instant response.
+     - **T2 & T3**: Escalated to the lower-level agents (L2/L3).
+     - **T4**: Routes to the LiveKit Voice Agent for real-time escalation and verification.
+
+2. **L2 Agent (Investigator)**:
+   - Utilizes Observability MCP tools (e.g., `get_asset_health`).
+   - Queries the `assets_inventory` (and `server_metrics`) tables to check server status, CPU, and memory usage to identify the root cause.
+
+3. **L3 Agent (Resolver)**:
+   - Uses the `check_incident_history` tool to query the `incident_history` table and review how similar past incidents were resolved.
+   - Retrieves the relevant execution runbook from **Qdrant** (Procedural Memory).
+   - Applies the fix using the `perform_system_action` tool (Action MCP).
+
+4. **L4 Agent (Supervisor/Finalizer)**:
+   - Reviews and validates the fix applied by the L3 agent.
+   - Uses the `update_ticket_status` tool to mark the ticket as resolved in the `live_tickets` table.
+   - Notifies the user: *"Problem solved."*
+
+#### 🚨 T4 Deep Dive: Critical Incident Workflow (Voice Escalation)
+For **T4 (Critical Outage)** scenarios like a total system crash, the Swarm executes a specialized high-priority flow:
+- **Trigger & Alert (L1)**: Logs the critical ticket and immediately triggers the **LiveKit Voice Agent** to call a human DevOps engineer for real-time awareness.
+- **Monitoring & Oversight (L4)**: The L4 Supervisor assumes active oversight (Monitored State) to coordinate the resolution.
+- **Root Cause Analysis (L2)**: Rapidly pulls CPU/RAM/Load metrics via the Observability MCP to pinpoint the failure point.
+- **Resolution Strategy (L3)**: Cross-references Qdrant runbooks with `incident_history` and executes the emergency fix (e.g., restarting Redis) via the Action MCP.
+- **Final Verification (L4)**: Verifies system stability post-fix and closes the ticket.
+
 ## 🚀 Pipeline Execution Steps
 
 1. **S3 Upload (`s3_ingesting.py`)**: Validates raw JSON incident transcripts and securely uploads them to AWS S3.
