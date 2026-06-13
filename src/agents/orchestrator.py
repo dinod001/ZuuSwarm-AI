@@ -6,7 +6,8 @@ Now completely Object-Oriented and integrated with MultiServerMCPClient.
 
 import time
 from typing import Literal, Optional, List
-from loguru import logger
+from infrastructure.log import get_logger
+logger = get_logger("orchestrator")
 from langgraph.graph import StateGraph, START, END
 from dotenv import load_dotenv
 load_dotenv()
@@ -70,13 +71,18 @@ class AgentOrchestrator:
         try:
             for t in self.mcp_tools:
                 if t.name == tool_name:
-                    logger.info(f"🚀 Invoking MCP Tool: {tool_name} with params: {params}")
+                    logger.info(f"🚀 [{server_name}] Invoking MCP Tool: {tool_name}")
+                    logger.debug(f"   📋 Params: {params}")
+                    start = time.time()
                     res = await t.ainvoke(params)
-                    logger.info(f"✅ MCP Tool finished: {tool_name}")
+                    elapsed = round((time.time() - start) * 1000)
+                    logger.info(f"✅ [{server_name}] {tool_name} completed in {elapsed}ms")
+                    logger.debug(f"   📦 Result preview: {str(res)[:200]}")
                     return res
+            logger.warning(f"⚠️ Tool '{tool_name}' not found in loaded MCP tools.")
             return f"Error: Tool '{tool_name}' not found."
         except Exception as e:
-            logger.error(f"MCP invoke failed for {tool_name}: {e}")
+            logger.error(f"❌ [{server_name}] MCP invoke FAILED for {tool_name}: {e}")
             return f"MCP error: {e}"
 
     # ---------------------------------------------------------------------------
@@ -87,11 +93,11 @@ class AgentOrchestrator:
         """1. Load ST and LT memory for context."""
         user_id = state.get("user_id", "default_user")
         session_id = state.get("session_id", "default_session")
+        logger.info(f"📥 [Memory Ingest] Loading memory for user={user_id}, session={session_id}")
         
         user_message = state["messages"][-1].content if state["messages"] else ""
             
         try:
-            # recall is currently synchronous in memory_ops, but we can run it safely
             st_turns, lt_facts = self.recaller.recall(
                 user_id=user_id,
                 session_id=session_id,
@@ -103,9 +109,10 @@ class AgentOrchestrator:
                 for f in lt_facts:
                     out += f"- {f.text}\n"
             
+            logger.info(f"📥 [Memory Ingest] Loaded {len(st_turns)} ST turns, {len(lt_facts)} LT facts")
             return {"memory_context": out, "retry_count": 0}
         except Exception as e:
-            logger.error(f"Memory ingest failed: {e}")
+            logger.error(f"❌ [Memory Ingest] Failed: {e}")
             return {"memory_context": "(Memory unavailable)", "retry_count": 0}
 
 
@@ -113,14 +120,14 @@ class AgentOrchestrator:
         """2. Classify and Route."""
         user_message = state["messages"][-1].content if state["messages"] else ""
         memory_context = state.get("memory_context", "")
+        logger.info(f"🏷️ [L1 Triage] Classifying user message...")
         
         try:
-            # Router is sync
             decision = query_router(user_message=str(user_message), memory_context=memory_context)
+            logger.info(f"🏷️ [L1 Triage] Decision: type={decision.get('ticket_type')}, severity={decision.get('severity')}, route={decision.get('route')}")
             
             ticket_id = "UNKNOWN"
             try:
-                # Map Router T1-T4 to CRM Enums
                 type_map = {
                     "T1": "access_identity",
                     "T2": "asset_provisioning",
@@ -137,12 +144,13 @@ class AgentOrchestrator:
                 })
                 if isinstance(res, str) and "Ticket " in res:
                     ticket_id = res.split("Ticket ")[1].split(" ")[0]
+                logger.info(f"🎫 [L1 Triage] Ticket created: {ticket_id}")
             except Exception as e:
-                logger.error(f"Failed to create ticket: {e}")
+                logger.error(f"❌ [L1 Triage] Failed to create ticket: {e}")
 
             return {"route_decision": decision, "ticket_id": ticket_id}
         except Exception as e:
-            logger.error(f"L1 Triage failed: {e}")
+            logger.error(f"❌ [L1 Triage] Classification failed: {e}")
             fallback_decision = {
                 "ticket_type": "T2",
                 "severity": "medium",
@@ -156,6 +164,7 @@ class AgentOrchestrator:
         """3. CAG for T1 Access & Identity with SQL Clearance Check."""
         user_id = state.get("user_id", "unknown")
         user_message = state["messages"][-1].content if state["messages"] else ""
+        logger.info(f"⚡ [CAG FastPath] Checking clearance for user={user_id}")
         
         try:
             clearance_str = await self.mcp_invoke("machina-crm", "check_user_clearance", {"email": user_id})
@@ -164,15 +173,18 @@ class AgentOrchestrator:
                 clearance = int(clearance_str)
             except (ValueError, TypeError):
                 clearance = 0
+            
+            logger.info(f"⚡ [CAG FastPath] User clearance level: {clearance}")
                 
             if clearance >= 3:
-                # Authorized -> Retrieve CAG response from machina-rag
+                logger.info(f"✅ [CAG FastPath] Clearance APPROVED (level {clearance} >= 3). Querying RAG...")
                 answer_text = await self.mcp_invoke("machina-rag", "search", {"query": str(user_message), "use_cache": True})
                 answer = f"CAG FastPath (Clearance Level {clearance} Approved):\n{answer_text}"
             else:
-                # Unauthorized
+                logger.warning(f"🚫 [CAG FastPath] Clearance REJECTED (level {clearance} < 3)")
                 answer = f"CAG FastPath Rejected: You do not have the required SQL clearance (Level 3+) for this request. Your level is {clearance}."
         except Exception as e:
+            logger.error(f"❌ [CAG FastPath] Failed: {e}")
             answer = f"CAG failed: {e}"
             
         return {"action_taken": answer}
@@ -183,17 +195,25 @@ class AgentOrchestrator:
         retry_count = state.get("retry_count", 0) + 1
         decision = state.get("route_decision", {})
         user_message = state["messages"][-1].content if state["messages"] else ""
+        prev_failure = state.get("action_taken", "")
+        
+        logger.info(f"🔍 [L2 Investigator] Starting investigation (retry #{retry_count})")
         
         try:
-            # Bind L2 tools
             l2_tools = [t for t in self.mcp_tools if t.name in ["get_asset_health", "check_service_status"]]
             llm = self.reasoning_llm.bind_tools(l2_tools)
             
             system_prompt = build_l2_investigator_prompt()
             
+            # On retry, include previous failure context so L2 doesn't repeat the same approach
+            user_content = f"Ticket Route Info: {decision}\n\nUser Message: {user_message}\n\nExtract the asset/service name and check its status."
+            if retry_count > 1 and prev_failure:
+                user_content += f"\n\n⚠️ PREVIOUS ATTEMPT FAILED (retry #{retry_count}). Previous L3 result: {prev_failure}\nTry a DIFFERENT investigation approach."
+                logger.warning(f"🔄 [L2 Investigator] Retry #{retry_count} — injecting previous failure context")
+            
             messages = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Ticket Route Info: {decision}\n\nUser Message: {user_message}\n\nExtract the asset/service name and check its status."}
+                {"role": "user", "content": user_content}
             ]
             
             response = await llm.ainvoke(messages)
@@ -201,15 +221,18 @@ class AgentOrchestrator:
             investigation_results = ""
             
             if response.tool_calls:
+                logger.info(f"🔍 [L2 Investigator] LLM requested {len(response.tool_calls)} tool call(s)")
                 for tc in response.tool_calls:
                     res = await self.mcp_invoke("machina-crm", tc["name"], tc["args"])
                     investigation_results += f"[{tc['name']}]\n{res}\n\n"
             
             if not investigation_results:
                 investigation_results = response.content
-                
+            
+            logger.info(f"🔍 [L2 Investigator] Investigation complete. Result length: {len(investigation_results)} chars")
             return {"investigation_results": investigation_results.strip(), "retry_count": retry_count}
         except Exception as e:
+            logger.error(f"❌ [L2 Investigator] Failed: {e}")
             return {"investigation_results": f"Investigator error: {e}", "retry_count": retry_count}
 
 
@@ -219,6 +242,8 @@ class AgentOrchestrator:
         investigation = state.get("investigation_results", "")
         ticket_id = state.get("ticket_id", "UNKNOWN")
         user_message = state["messages"][-1].content if state["messages"] else ""
+        
+        logger.info(f"🔧 [L3 Resolver] Starting resolution for ticket={ticket_id} (retry #{retry_count})")
         
         try:
             l3_tools = [t for t in self.mcp_tools if t.name in ["check_incident_history", "search", "perform_system_action"]]
@@ -237,18 +262,23 @@ class AgentOrchestrator:
             action_res = ""
             
             if response.tool_calls:
+                logger.info(f"🔧 [L3 Resolver] LLM requested {len(response.tool_calls)} tool call(s)")
                 for tc in response.tool_calls:
                     if tc["name"] == "search":
                         runbook += "[RAG Runbook]\n" + str(await self.mcp_invoke("machina-rag", tc["name"], tc["args"])) + "\n"
                     else:
                         action_res += f"[{tc['name']}]\n" + str(await self.mcp_invoke("machina-crm", tc["name"], tc["args"])) + "\n"
-                        
+            
+            final_action = action_res.strip() if action_res else response.content
+            logger.info(f"🔧 [L3 Resolver] Resolution complete. Action result preview: {final_action[:150]}")
+            
             return {
                 "retrieved_runbook": runbook.strip(),
-                "action_taken": action_res.strip() if action_res else response.content,
+                "action_taken": final_action,
                 "retry_count": retry_count
             }
         except Exception as e:
+            logger.error(f"❌ [L3 Resolver] Action failed: {e}")
             return {"action_taken": f"Action failed: {e}", "retry_count": retry_count}
 
 
@@ -256,13 +286,18 @@ class AgentOrchestrator:
         """5. L4 Supervisor - Escalates T4 or finalizes T2/T3."""
         retry_count = state.get("retry_count", 0)
         route = state.get("route_decision", {}).get("route", "unknown")
+        ticket_id = state.get("ticket_id", "UNKNOWN")
+        
+        logger.info(f"👔 [L4 Supervisor] Evaluating ticket={ticket_id}, route={route}, retries={retry_count}")
         
         # If it's a direct T4 Voice escalation
         if route == "l4_voice":
+            logger.warning(f"🚨 [L4 Supervisor] T4 Critical — escalating to LiveKit Voice Agent")
             return {"final_answer": "🚨 ESCALATED TO LIVEKIT VOICE AGENT. (Sub-2s latency path triggered). Waiting for DevOps clearance..."}
             
         # Otherwise, act as finalizer for T2/T3
         if retry_count > 3:
+            logger.warning(f"⚠️ [L4 Supervisor] Max retries ({retry_count}) exceeded — escalating to human engineer")
             return {"final_answer": "I apologize, but I am unable to resolve this issue automatically. I have escalated this ticket to a human engineer."}
         
         if "final_answer" in state and state["final_answer"]:
@@ -271,7 +306,6 @@ class AgentOrchestrator:
         user_message = state["messages"][-1].content if state["messages"] else ""
         memory_context = state.get("memory_context", "")
         tool_output = state.get("action_taken", state.get("investigation_results", "No output generated."))
-        ticket_id = state.get("ticket_id", "UNKNOWN")
         
         try:
             l4_tools = [t for t in self.mcp_tools if t.name in ["update_ticket", "check_service_status"]]
@@ -290,14 +324,17 @@ class AgentOrchestrator:
             ])
             
             if response.tool_calls:
+                logger.info(f"👔 [L4 Supervisor] Executing {len(response.tool_calls)} tool call(s) for ticket update")
                 for tc in response.tool_calls:
                     await self.mcp_invoke("machina-crm", tc["name"], tc["args"])
                     
             # Fallback text if LLM just called tools without generating a response string
             final_ans = response.content if response.content else "Ticket verified and closed by L4 Supervisor."
             
+            logger.info(f"👔 [L4 Supervisor] Final answer generated ({len(final_ans)} chars)")
             return {"final_answer": final_ans}
         except Exception as e:
+            logger.error(f"❌ [L4 Supervisor] Error: {e}")
             return {"final_answer": f"L4 Supervisor error: {e}"}
 
 
@@ -305,6 +342,7 @@ class AgentOrchestrator:
         """8. Save ST and distill LT facts."""
         user_id = state.get("user_id", "default_user")
         session_id = state.get("session_id", "default_session")
+        logger.info(f"💾 [Memory Save] Persisting conversation for user={user_id}, session={session_id}")
         
         if not state.get("messages"):
             return {}
@@ -317,22 +355,22 @@ class AgentOrchestrator:
             turn_a = ConversationTurn(user_id=user_id, session_id=session_id, role="assistant", content=str(final_answer), ts=time.time())
             self.st_store.add(user_id, session_id, turn_u)
             self.st_store.add(user_id, session_id, turn_a)
+            logger.info(f"💾 [Memory Save] ST turns saved (user + assistant)")
             
             recent_turns = self.st_store.recent(user_id, session_id, k=6)
             if self.distiller.should_distill(recent_turns):
                 self.distiller.distill(user_id, recent_turns)
+                logger.info(f"💾 [Memory Save] LT distillation triggered")
                 
             # Also capture the episode
             all_turns = self.st_store.recent(user_id, session_id, k=100)
             if len(all_turns) >= 2:
-                # Need to run create_episode_from_turns with the LLM synchronously or wrap it properly.
-                # Since memory_save_node is async, we can do it normally.
                 episode = create_episode_from_turns(user_id, session_id, all_turns, self.reasoning_llm)
                 self.ep_store.store_episode(episode)
-                logger.info(f"💾 Episodic memory saved for session {session_id}")
+                logger.info(f"💾 [Memory Save] Episodic memory saved for session {session_id}")
                 
         except Exception as e:
-            logger.error(f"Memory save failed: {e}")
+            logger.error(f"❌ [Memory Save] Failed: {e}")
             
         return {}
 
@@ -357,6 +395,7 @@ class AgentOrchestrator:
         
         def route_triage(state: AgentState) -> Literal["cag_fastpath_node", "l2_investigator_node", "l4_supervisor_node"]:
             route = state.get("route_decision", {}).get("route", "l2_investigator")
+            logger.info(f"🔀 [Router] Triage routing to: {route}")
             if route == "cag":
                 return "cag_fastpath_node"
             elif route == "l4_voice":
@@ -364,11 +403,22 @@ class AgentOrchestrator:
             return "l2_investigator_node"
 
         def route_retry_l2(state: AgentState) -> Literal["l3_resolver_node", "l4_supervisor_node"]:
-            if state.get("retry_count", 0) > 3:
+            retry_count = state.get("retry_count", 0)
+            if retry_count > 3:
+                logger.warning(f"🔀 [Router] L2 retry count ({retry_count}) exceeded — escalating to L4")
                 return "l4_supervisor_node"
+            logger.info(f"🔀 [Router] L2 → L3 (retry #{retry_count})")
             return "l3_resolver_node"
 
-        def route_retry_l3(state: AgentState) -> Literal["l4_supervisor_node"]:
+        def route_retry_l3(state: AgentState) -> Literal["l4_supervisor_node", "l2_investigator_node"]:
+            action = str(state.get("action_taken", "")).lower()
+            retry_count = state.get("retry_count", 0)
+            # If the action failed or had an error, loop back to L2 for reinvestigation
+            if "fail" in action or "error" in action or "exception" in action:
+                if retry_count <= 3:
+                    logger.warning(f"🔄 [Router] L3 action FAILED — looping back to L2 (retry #{retry_count})")
+                    return "l2_investigator_node"
+            logger.info(f"🔀 [Router] L3 → L4 (finalizing)")
             return "l4_supervisor_node"
             
         workflow.add_conditional_edges("l1_triage_node", route_triage)

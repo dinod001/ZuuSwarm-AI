@@ -25,7 +25,7 @@ async def test_orchestrator():
     orchestrator = await build_agent_mcp()
     logger.success("✅ Initialization Complete!\n")
 
-    user_id = "EMP-0408" # Valid employee ID
+    user_id = "EMP-0044" # Level 5 DevOps Lead
     session_id = "test-session-001"
 
     # Test 1: T1 Access (Should route to CAG)
