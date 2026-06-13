@@ -142,8 +142,12 @@ class AgentOrchestrator:
                     "severity": decision["severity"],
                     "reported_by": state.get("user_id", "unknown"),
                 })
-                if isinstance(res, str) and "Ticket " in res:
-                    ticket_id = res.split("Ticket ")[1].split(" ")[0]
+                res_str = str(res)
+                if "Ticket " in res_str:
+                    try:
+                        ticket_id = res_str.split("Ticket ")[1].split(" ")[0]
+                    except IndexError:
+                        pass
                 logger.info(f"🎫 [L1 Triage] Ticket created: {ticket_id}")
             except Exception as e:
                 logger.error(f"❌ [L1 Triage] Failed to create ticket: {e}")
@@ -163,22 +167,25 @@ class AgentOrchestrator:
     async def cag_fastpath_node(self, state: AgentState) -> dict:
         """3. CAG for T1 Access & Identity with SQL Clearance Check."""
         user_id = state.get("user_id", "unknown")
+        user_email = state.get("user_email", user_id)
         user_message = state["messages"][-1].content if state["messages"] else ""
-        logger.info(f"⚡ [CAG FastPath] Checking clearance for user={user_id}")
+        logger.info(f"⚡ [CAG FastPath] Checking clearance for user={user_email}")
         
         try:
-            clearance_str = await self.mcp_invoke("machina-crm", "check_user_clearance", {"email": user_id})
+            clearance_res = await self.mcp_invoke("machina-crm", "check_user_clearance", {"email": user_email})
             
-            try:
-                clearance = int(clearance_str)
-            except (ValueError, TypeError):
+            import re
+            match = re.search(r'\d+', str(clearance_res))
+            if match:
+                clearance = int(match.group())
+            else:
                 clearance = 0
             
-            logger.info(f"⚡ [CAG FastPath] User clearance level: {clearance}")
+            logger.info(f"⚡ [CAG FastPath] User clearance level: {clearance} (raw={str(clearance_res)[:50]})")
                 
             if clearance >= 3:
                 logger.info(f"✅ [CAG FastPath] Clearance APPROVED (level {clearance} >= 3). Querying RAG...")
-                answer_text = await self.mcp_invoke("machina-rag", "search", {"query": str(user_message), "use_cache": True})
+                answer_text = await self.mcp_invoke("machina-rag", "rag_search", {"query": str(user_message), "use_cache": True})
                 answer = f"CAG FastPath (Clearance Level {clearance} Approved):\n{answer_text}"
             else:
                 logger.warning(f"🚫 [CAG FastPath] Clearance REJECTED (level {clearance} < 3)")
@@ -221,8 +228,9 @@ class AgentOrchestrator:
             investigation_results = ""
             
             if response.tool_calls:
-                logger.info(f"🔍 [L2 Investigator] LLM requested {len(response.tool_calls)} tool call(s)")
-                for tc in response.tool_calls:
+                tool_calls_to_run = response.tool_calls[:3]
+                logger.info(f"🔍 [L2 Investigator] LLM requested {len(response.tool_calls)} tool call(s). Executing max {len(tool_calls_to_run)}.")
+                for tc in tool_calls_to_run:
                     res = await self.mcp_invoke("machina-crm", tc["name"], tc["args"])
                     investigation_results += f"[{tc['name']}]\n{res}\n\n"
             
@@ -237,7 +245,7 @@ class AgentOrchestrator:
 
 
     async def l3_resolver_node(self, state: AgentState) -> dict:
-        """6. Execute fix using RAG and SQL History Tool Calling."""
+        """6. Execute fix using RAG and SQL History."""
         retry_count = state.get("retry_count", 0) + 1
         investigation = state.get("investigation_results", "")
         ticket_id = state.get("ticket_id", "UNKNOWN")
@@ -246,34 +254,64 @@ class AgentOrchestrator:
         logger.info(f"🔧 [L3 Resolver] Starting resolution for ticket={ticket_id} (retry #{retry_count})")
         
         try:
-            l3_tools = [t for t in self.mcp_tools if t.name in ["check_incident_history", "search", "perform_system_action"]]
+            # 1. Force RAG Search
+            rag_query = str(user_message)
+            runbook_res = await self.mcp_invoke("machina-rag", "rag_search", {"query": rag_query, "use_cache": True})
+            runbook_str = str(runbook_res) if runbook_res else ""
+            runbook = f"[RAG Runbook]\n{runbook_str}" if runbook_str else ""
+            
+            # 2. Extract affected service to force Incident History check
+            extract_prompt = f"Extract ONLY the core affected service or system name from this issue (e.g. 'auth-api', 'PostgreSQL', 'VPN'). Output nothing else. Issue: {user_message}\nInvestigation: {investigation}"
+            service_name_res = await self.router_llm.ainvoke([{"role": "user", "content": extract_prompt}])
+            service_name = service_name_res.content.strip()
+            
+            history_res = await self.mcp_invoke("machina-crm", "check_incident_history", {"affected_service": service_name})
+            history_str = str(history_res) if history_res else ""
+            action_res = f"[Incident History]\n{history_str}" if history_str else ""
+            
+            # Combine Context
+            combined_context = f"{runbook}\n\n{action_res}".strip()
+            logger.info(f"🔧 [L3 Resolver] Gathered Context length: {len(combined_context)}")
+            
+            # 3. Check if empty
+            no_runbook = ("No results" in runbook_str) or not runbook_str.strip()
+            no_history = ("No past incidents" in history_str) or ("not found" in history_str) or not history_str.strip()
+            
+            if no_runbook and no_history:
+                logger.warning(f"🔧 [L3 Resolver] No context found. Escaping without action.")
+                return {
+                    "retrieved_runbook": combined_context,
+                    "action_taken": "It seems there is no previous incident or runbook, please contact a senior officer.",
+                    "retry_count": retry_count
+                }
+            
+            # 4. Use Context to perform system action
+            l3_tools = [t for t in self.mcp_tools if t.name == "perform_system_action"]
             llm = self.reasoning_llm.bind_tools(l3_tools)
             
             system_prompt = build_l3_resolver_prompt()
             
             messages = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Ticket ID: {ticket_id}\nUser Issue: {user_message}\nL2 Investigation: {investigation}\n\nRetrieve runbooks/history and perform the fix."}
+                {"role": "user", "content": f"Ticket ID: {ticket_id}\nUser Issue: {user_message}\nL2 Investigation: {investigation}\n\nCombined Context:\n{combined_context}\n\nPlease execute `perform_system_action` to fix the issue."}
             ]
             
             response = await llm.ainvoke(messages)
             
-            runbook = ""
-            action_res = ""
-            
+            final_action = response.content
             if response.tool_calls:
-                logger.info(f"🔧 [L3 Resolver] LLM requested {len(response.tool_calls)} tool call(s)")
-                for tc in response.tool_calls:
-                    if tc["name"] == "search":
-                        runbook += "[RAG Runbook]\n" + str(await self.mcp_invoke("machina-rag", tc["name"], tc["args"])) + "\n"
-                    else:
-                        action_res += f"[{tc['name']}]\n" + str(await self.mcp_invoke("machina-crm", tc["name"], tc["args"])) + "\n"
+                tc = response.tool_calls[0] # Take the first tool call
+                if tc["name"] == "perform_system_action":
+                    res = await self.mcp_invoke("machina-crm", tc["name"], tc["args"])
+                    final_action = f"[{tc['name']}]\n{res}"
             
-            final_action = action_res.strip() if action_res else response.content
+            if not final_action:
+                final_action = "perform_system_action was not called by the LLM."
+                
             logger.info(f"🔧 [L3 Resolver] Resolution complete. Action result preview: {final_action[:150]}")
             
             return {
-                "retrieved_runbook": runbook.strip(),
+                "retrieved_runbook": combined_context,
                 "action_taken": final_action,
                 "retry_count": retry_count
             }
@@ -323,13 +361,28 @@ class AgentOrchestrator:
                 {"role": "user", "content": f"Ticket ID: {ticket_id}\n\n{user_prompt}\n\nVerify and close the ticket if resolved."}
             ])
             
+            supervisor_logs = ""
             if response.tool_calls:
-                logger.info(f"👔 [L4 Supervisor] Executing {len(response.tool_calls)} tool call(s) for ticket update")
-                for tc in response.tool_calls:
-                    await self.mcp_invoke("machina-crm", tc["name"], tc["args"])
+                tool_calls_to_run = response.tool_calls[:3]
+                logger.info(f"👔 [L4 Supervisor] LLM requested {len(response.tool_calls)} tool call(s). Executing max {len(tool_calls_to_run)}.")
+                for tc in tool_calls_to_run:
+                    if tc["name"] in ["update_ticket", "perform_system_action"]:
+                        # Force the correct ticket_id if LLM forgot or used UNKNOWN
+                        if tc["args"].get("ticket_id") in ["UNKNOWN", None, ""]:
+                            tc["args"]["ticket_id"] = ticket_id
+                            
+                        res = await self.mcp_invoke("machina-crm", tc["name"], tc["args"])
+                        supervisor_logs += f"[{tc['name']}] -> {res}\n"
                     
             # Fallback text if LLM just called tools without generating a response string
-            final_ans = response.content if response.content else "Ticket verified and closed by L4 Supervisor."
+            final_ans = response.content
+            if not final_ans:
+                # If LLM produces tool calls but no output content, ask it to summarize the L3 action into a friendly final response
+                summary_prompt = f"The issue was resolved with the following actions:\n{tool_output}\n\nPlease generate a friendly final response to the user explaining how the issue was resolved."
+                summary_response = await self.reasoning_llm.ainvoke([
+                    {"role": "user", "content": summary_prompt}
+                ])
+                final_ans = summary_response.content if summary_response.content else tool_output
             
             logger.info(f"👔 [L4 Supervisor] Final answer generated ({len(final_ans)} chars)")
             return {"final_answer": final_ans}

@@ -18,6 +18,7 @@ class AgentState(TypedDict):
     
     # User / session identifiers (passed through every node)
     user_id: str
+    user_email: Optional[str]
     session_id: str
     
     # Context

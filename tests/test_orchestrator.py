@@ -25,7 +25,8 @@ async def test_orchestrator():
     orchestrator = await build_agent_mcp()
     logger.success("✅ Initialization Complete!\n")
 
-    user_id = "EMP-0044" # Level 5 DevOps Lead
+    user_id = "EMP-0080" # Valid employee ID
+    user_email = "ming.clark6@zuucrew.ai" # Level 5 DevOps Lead email
     session_id = "test-session-001"
 
     # Test 1: T1 Access (Should route to CAG)
@@ -38,6 +39,7 @@ async def test_orchestrator():
     state = {
         "messages": [HumanMessage(content=t1_prob)],
         "user_id": user_id,
+        "user_email": user_email,
         "session_id": session_id,
         "retry_count": 0,
     }
@@ -64,6 +66,7 @@ async def test_orchestrator():
     state = {
         "messages": [HumanMessage(content=t3_prob)],
         "user_id": user_id,
+        "user_email": user_email,
         "session_id": session_id,
         "retry_count": 0,
     }
