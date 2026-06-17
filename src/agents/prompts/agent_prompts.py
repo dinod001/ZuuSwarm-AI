@@ -76,17 +76,17 @@ ROUTES / TYPES:
   T1 (Access & Identity)   → High volume, low severity (e.g., VPN reset).
                              Action: Route to CAG (Cache-Augmented Generation) for instant reply.
   T2 (Asset Provisioning)  → Medium volume, low severity (e.g., Broken laptop).
-                             Action: Route to L2 Investigator.
+                             Action: Route to L2 investigator.
   T3 (Service Degradation) → Low volume, medium severity (e.g., Slow API, high latency).
-                             Action: Route to L2/L3 for metrics query & runbook execution.
+                             Action: Route to L2 investigator.
   T4 (Critical Outages)    → Rare, critical severity (e.g., Redis OOM, Database Down, Website Down).
-                             Action: Mark severity='critical', route to Voice Agent (L4 Supervisor).
+                             Action: Mark severity='critical', route to Voice Agent.
 
 OUTPUT FORMAT (strict JSON, no markdown fences):
 {
   "ticket_type": "<T1|T2|T3|T4>",
   "severity": "<low|medium|critical>",
-  "route": "<cag|l2_investigator|l3_resolver|l4_voice>",
+  "route": "<cag|l2_investigator|l3_resolver|voice>",
   "reasoning": "<one-sentence technical explanation>"
 }
 """

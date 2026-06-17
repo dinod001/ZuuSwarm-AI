@@ -32,6 +32,11 @@ from memory.lt_store import LongTermMemoryStore
 from memory.episodic_store import EpisodicMemoryStore, create_episode_from_turns
 from infrastructure.llm.embeddings import get_default_embeddings
 from infrastructure.llm.llm_provider import get_chat_llm, get_router_llm
+from agents.guardrail import Guardrail
+from agents.decision_graph import build_decision_graph
+from agents.router import QueryRouter
+from infrastructure.llm.llm_provider import get_router_llm
+
 
 
 class AgentOrchestrator:
@@ -62,6 +67,21 @@ class AgentOrchestrator:
         self.distiller = MemoryDistiller(llm=router_llm, lt_store=lt_store)
         
         self.app = self.build_graph()
+        self.guardrail = Guardrail( llm=router_llm)
+        self.query_router = QueryRouter(llm=get_router_llm(temperature=0))
+        self.decision_graph = self._build_decision_graph()
+    
+    def _build_decision_graph(self):
+        """Compile the parallel-classifier LangGraph used by the chat
+        API hot path. See ``agents.decision_graph`` for the topology
+        and node behaviour. The CAG cache is read via a getter
+        closure so the graph survives the late-binding pattern used
+        by the FastAPI lifespan.
+        """
+        return build_decision_graph(
+            guardrail=self.guardrail,
+            router=self.query_router
+        )
 
     async def mcp_invoke(self, server_name: str, tool_name: str, params: dict) -> str:
         """
