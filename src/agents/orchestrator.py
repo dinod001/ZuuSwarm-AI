@@ -5,6 +5,8 @@ Now completely Object-Oriented and integrated with MultiServerMCPClient.
 """
 
 import time
+import json
+import re
 from typing import Literal, Optional, List
 from infrastructure.log import get_logger
 logger = get_logger("orchestrator")
@@ -13,7 +15,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from agents.state import AgentState
-from agents.router import query_router
 from agents.prompts.agent_prompts import (
     build_l2_investigator_prompt,
     build_l3_resolver_prompt,
@@ -35,8 +36,6 @@ from infrastructure.llm.llm_provider import get_chat_llm, get_router_llm
 from agents.guardrail import Guardrail
 from agents.decision_graph import build_decision_graph
 from agents.router import QueryRouter
-from infrastructure.llm.llm_provider import get_router_llm
-
 
 
 class AgentOrchestrator:
@@ -47,29 +46,36 @@ class AgentOrchestrator:
     
     def __init__(
         self,
-        mcp_client: MultiServerMCPClient,
-        reasoning_llm,
-        router_llm,
-        st_store: ShortTermMemoryStore,
-        lt_store: LongTermMemoryStore,
-        ep_store: EpisodicMemoryStore,
-        mcp_tools: List = None,
+        llm_chat,
+        llm_router,
+        st_store,
+        lt_store,
+        recaller,
+        distiller,
+        llm_fast=None,
+        llm_guardrail=None,
+        crm_tool=None,
+        rag_tool=None,
     ):
-        self.mcp_client = mcp_client
-        self.reasoning_llm = reasoning_llm
-        self.router_llm = router_llm
+        self.llm_chat = llm_chat
+        self.reasoning_llm = llm_chat # Alias for compatibility
+        self.llm_fast = llm_fast
+        self.llm_router = llm_router
+        self.router_llm = llm_router # Alias for compatibility
+        self.llm_guardrail = llm_guardrail or llm_router
+        
         self.st_store = st_store
         self.lt_store = lt_store
-        self.ep_store = ep_store
-        self.mcp_tools = mcp_tools or []
+        self.recaller = recaller
+        self.distiller = distiller
         
-        self.recaller = MemoryRecaller(st_store, lt_store)
-        self.distiller = MemoryDistiller(llm=router_llm, lt_store=lt_store)
+        self.crm_tool = crm_tool
+        self.rag_tool = rag_tool
         
-        self.app = self.build_graph()
-        self.guardrail = Guardrail( llm=router_llm)
-        self.query_router = QueryRouter(llm=get_router_llm(temperature=0))
+        self.guardrail = Guardrail(llm=self.llm_guardrail)
+        self.query_router = QueryRouter(llm=self.llm_router)
         self.decision_graph = self._build_decision_graph()
+        self.app = self.build_graph()
     
     def _build_decision_graph(self):
         """Compile the parallel-classifier LangGraph used by the chat
@@ -82,28 +88,6 @@ class AgentOrchestrator:
             guardrail=self.guardrail,
             router=self.query_router
         )
-
-    async def mcp_invoke(self, server_name: str, tool_name: str, params: dict) -> str:
-        """
-        Helper method to manually invoke an MCP tool dynamically.
-        Finds the LangChain tool from the client and executes it.
-        """
-        try:
-            for t in self.mcp_tools:
-                if t.name == tool_name:
-                    logger.info(f"🚀 [{server_name}] Invoking MCP Tool: {tool_name}")
-                    logger.debug(f"   📋 Params: {params}")
-                    start = time.time()
-                    res = await t.ainvoke(params)
-                    elapsed = round((time.time() - start) * 1000)
-                    logger.info(f"✅ [{server_name}] {tool_name} completed in {elapsed}ms")
-                    logger.debug(f"   📦 Result preview: {str(res)[:200]}")
-                    return res
-            logger.warning(f"⚠️ Tool '{tool_name}' not found in loaded MCP tools.")
-            return f"Error: Tool '{tool_name}' not found."
-        except Exception as e:
-            logger.error(f"❌ [{server_name}] MCP invoke FAILED for {tool_name}: {e}")
-            return f"MCP error: {e}"
 
     # ---------------------------------------------------------------------------
     # Nodes
@@ -143,7 +127,7 @@ class AgentOrchestrator:
         logger.info(f"🏷️ [L1 Triage] Classifying user message...")
         
         try:
-            decision = query_router(user_message=str(user_message), memory_context=memory_context)
+            decision = await self.query_router.aroute(user_message=str(user_message), memory_context=memory_context)
             logger.info(f"🏷️ [L1 Triage] Decision: type={decision.get('ticket_type')}, severity={decision.get('severity')}, route={decision.get('route')}")
             
             ticket_id = "UNKNOWN"
@@ -156,19 +140,20 @@ class AgentOrchestrator:
                 }
                 mapped_type = type_map.get(decision.get("ticket_type"), "service_degradation")
 
-                res = await self.mcp_invoke("machina-crm", "create_ticket", {
-                    "issue_description": str(user_message),
-                    "ticket_type": mapped_type,
-                    "severity": decision["severity"],
-                    "reported_by": state.get("user_id", "unknown"),
-                })
-                res_str = str(res)
-                if "Ticket " in res_str:
-                    try:
-                        ticket_id = res_str.split("Ticket ")[1].split(" ")[0]
-                    except IndexError:
-                        pass
-                logger.info(f"🎫 [L1 Triage] Ticket created: {ticket_id}")
+                if self.crm_tool:
+                    res = await self.crm_tool.adispatch("create_ticket", {
+                        "issue_description": str(user_message),
+                        "ticket_type": mapped_type,
+                        "severity": decision["severity"],
+                        "reported_by": state.get("user_id", "unknown"),
+                    })
+                    res_str = str(res)
+                    if "Ticket " in res_str:
+                        try:
+                            ticket_id = res_str.split("Ticket ")[1].split(" ")[0]
+                        except IndexError:
+                            pass
+                    logger.info(f"🎫 [L1 Triage] Ticket created: {ticket_id}")
             except Exception as e:
                 logger.error(f"❌ [L1 Triage] Failed to create ticket: {e}")
 
@@ -192,20 +177,16 @@ class AgentOrchestrator:
         logger.info(f"⚡ [CAG FastPath] Checking clearance for user={user_email}")
         
         try:
-            clearance_res = await self.mcp_invoke("machina-crm", "check_user_clearance", {"email": user_email})
+            clearance_res = await self.crm_tool.adispatch("check_user_clearance", {"email": user_email}) if self.crm_tool else "0"
             
-            import re
             match = re.search(r'\d+', str(clearance_res))
-            if match:
-                clearance = int(match.group())
-            else:
-                clearance = 0
+            clearance = int(match.group()) if match else 0
             
             logger.info(f"⚡ [CAG FastPath] User clearance level: {clearance} (raw={str(clearance_res)[:50]})")
                 
             if clearance >= 3:
                 logger.info(f"✅ [CAG FastPath] Clearance APPROVED (level {clearance} >= 3). Querying RAG...")
-                answer_text = await self.mcp_invoke("machina-rag", "rag_search", {"query": str(user_message), "use_cache": True})
+                answer_text = await self.rag_tool.adispatch("search", {"query": str(user_message), "use_cache": True}) if self.rag_tool else "RAG unavailable."
                 answer = f"CAG FastPath (Clearance Level {clearance} Approved):\n{answer_text}"
             else:
                 logger.warning(f"🚫 [CAG FastPath] Clearance REJECTED (level {clearance} < 3)")
@@ -218,46 +199,50 @@ class AgentOrchestrator:
 
 
     async def l2_investigator_node(self, state: AgentState) -> dict:
-        """4. Query Observability Metrics using LLM Tool Calling."""
+        """4. Query Observability Metrics directly without LLM tool binding to save latency."""
         retry_count = state.get("retry_count", 0) + 1
         decision = state.get("route_decision", {})
         user_message = state["messages"][-1].content if state["messages"] else ""
-        prev_failure = state.get("action_taken", "")
         
         logger.info(f"🔍 [L2 Investigator] Starting investigation (retry #{retry_count})")
         
         try:
-            l2_tools = [t for t in self.mcp_tools if t.name in ["get_asset_health", "check_service_status"]]
-            llm = self.reasoning_llm.bind_tools(l2_tools)
-            
+            # Quickly extract asset or service name using router LLM and the LangFuse persona
             system_prompt = build_l2_investigator_prompt()
             
-            # On retry, include previous failure context so L2 doesn't repeat the same approach
-            user_content = f"Ticket Route Info: {decision}\n\nUser Message: {user_message}\n\nExtract the asset/service name and check its status."
-            if retry_count > 1 and prev_failure:
-                user_content += f"\n\n⚠️ PREVIOUS ATTEMPT FAILED (retry #{retry_count}). Previous L3 result: {prev_failure}\nTry a DIFFERENT investigation approach."
-                logger.warning(f"🔄 [L2 Investigator] Retry #{retry_count} — injecting previous failure context")
+            # Fetch valid catalogs from CRM so the LLM doesn't guess blindly
+            if self.crm_tool:
+                valid_assets = await self.crm_tool.adispatch("get_all_asset_names", {})
+                valid_services = await self.crm_tool.adispatch("get_all_service_names", {})
+            else:
+                valid_assets = "Unknown"
+                valid_services = "Unknown"
+                
+            extract_prompt = (
+                f"Extract the affected asset or service name from this issue. If multiple, pick the main one.\n"
+                f"Output ONLY the exact name from the valid lists below, nothing else.\n\n"
+                f"Valid Assets: {valid_assets}\n"
+                f"Valid Services: {valid_services}\n\n"
+                f"Issue: {user_message}"
+            )
             
-            messages = [
+            res = await self.router_llm.ainvoke([
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content}
-            ]
+                {"role": "user", "content": extract_prompt}
+            ])
+            target_name = res.content.strip()
             
-            response = await llm.ainvoke(messages)
+            logger.info(f"🔍 [L2 Investigator] Extracted target: {target_name}")
             
-            investigation_results = ""
-            
-            if response.tool_calls:
-                tool_calls_to_run = response.tool_calls[:3]
-                logger.info(f"🔍 [L2 Investigator] LLM requested {len(response.tool_calls)} tool call(s). Executing max {len(tool_calls_to_run)}.")
-                for tc in tool_calls_to_run:
-                    res = await self.mcp_invoke("machina-crm", tc["name"], tc["args"])
-                    investigation_results += f"[{tc['name']}]\n{res}\n\n"
-            
-            if not investigation_results:
-                investigation_results = response.content
-            
-            logger.info(f"🔍 [L2 Investigator] Investigation complete. Result length: {len(investigation_results)} chars")
+            # Directly call the CRM tool adapter to save LLM round-trip time
+            if self.crm_tool:
+                status_res = await self.crm_tool.adispatch("check_service_status", {"service_name": target_name})
+                health_res = await self.crm_tool.adispatch("get_asset_health", {"asset_name": target_name})
+                investigation_results = f"[check_service_status]\n{status_res}\n\n[get_asset_health]\n{health_res}"
+            else:
+                investigation_results = "CRM tool unavailable."
+                
+            logger.info(f"🔍 [L2 Investigator] Investigation complete.")
             return {"investigation_results": investigation_results.strip(), "retry_count": retry_count}
         except Exception as e:
             logger.error(f"❌ [L2 Investigator] Failed: {e}")
@@ -265,7 +250,7 @@ class AgentOrchestrator:
 
 
     async def l3_resolver_node(self, state: AgentState) -> dict:
-        """6. Execute fix using RAG and SQL History."""
+        """6. Execute fix using RAG and SQL History directly without LLM tool binding."""
         retry_count = state.get("retry_count", 0) + 1
         investigation = state.get("investigation_results", "")
         ticket_id = state.get("ticket_id", "UNKNOWN")
@@ -274,9 +259,9 @@ class AgentOrchestrator:
         logger.info(f"🔧 [L3 Resolver] Starting resolution for ticket={ticket_id} (retry #{retry_count})")
         
         try:
-            # 1. Force RAG Search
+            # 1. Force RAG Search directly
             rag_query = str(user_message)
-            runbook_res = await self.mcp_invoke("machina-rag", "rag_search", {"query": rag_query, "use_cache": True})
+            runbook_res = await self.rag_tool.adispatch("search", {"query": rag_query, "use_cache": True}) if self.rag_tool else ""
             runbook_str = str(runbook_res) if runbook_res else ""
             runbook = f"[RAG Runbook]\n{runbook_str}" if runbook_str else ""
             
@@ -285,7 +270,7 @@ class AgentOrchestrator:
             service_name_res = await self.router_llm.ainvoke([{"role": "user", "content": extract_prompt}])
             service_name = service_name_res.content.strip()
             
-            history_res = await self.mcp_invoke("machina-crm", "check_incident_history", {"affected_service": service_name})
+            history_res = await self.crm_tool.adispatch("check_incident_history", {"affected_service": service_name}) if self.crm_tool else ""
             history_str = str(history_res) if history_res else ""
             action_res = f"[Incident History]\n{history_str}" if history_str else ""
             
@@ -305,28 +290,37 @@ class AgentOrchestrator:
                     "retry_count": retry_count
                 }
             
-            # 4. Use Context to perform system action
-            l3_tools = [t for t in self.mcp_tools if t.name == "perform_system_action"]
-            llm = self.reasoning_llm.bind_tools(l3_tools)
-            
+            # 4. Use LLM just to extract the required action parameters, bypassing slow bind_tools
             system_prompt = build_l3_resolver_prompt()
+            action_prompt = f"Based on the issue, investigation, and runbook below, determine the system action to take. Return ONLY a JSON object with 'action_type' and 'resolution_notes'.\nIssue: {user_message}\nInvestigation: {investigation}\nContext:\n{combined_context}"
             
-            messages = [
+            res = await self.router_llm.ainvoke([
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Ticket ID: {ticket_id}\nUser Issue: {user_message}\nL2 Investigation: {investigation}\n\nCombined Context:\n{combined_context}\n\nPlease execute `perform_system_action` to fix the issue."}
-            ]
+                {"role": "user", "content": action_prompt}
+            ])
             
-            response = await llm.ainvoke(messages)
-            
-            final_action = response.content
-            if response.tool_calls:
-                tc = response.tool_calls[0] # Take the first tool call
-                if tc["name"] == "perform_system_action":
-                    res = await self.mcp_invoke("machina-crm", tc["name"], tc["args"])
-                    final_action = f"[{tc['name']}]\n{res}"
-            
-            if not final_action:
-                final_action = "perform_system_action was not called by the LLM."
+            match = re.search(r'\{.*\}', res.content, re.DOTALL)
+            if match:
+                try:
+                    action_data = json.loads(match.group())
+                    action_type = action_data.get("action_type", "unknown_action")
+                    notes = action_data.get("resolution_notes", "Automated fix applied.")
+                except Exception:
+                    action_type = "unknown_action"
+                    notes = res.content.strip()
+            else:
+                action_type = "unknown_action"
+                notes = res.content.strip()
+
+            if self.crm_tool:
+                final_action_res = await self.crm_tool.adispatch("perform_system_action", {
+                    "ticket_id": ticket_id,
+                    "action_type": action_type,
+                    "resolution_notes": notes
+                })
+                final_action = f"[perform_system_action]\n{final_action_res}"
+            else:
+                final_action = "CRM tool unavailable to perform system action."
                 
             logger.info(f"🔧 [L3 Resolver] Resolution complete. Action result preview: {final_action[:150]}")
             
@@ -341,7 +335,7 @@ class AgentOrchestrator:
 
 
     async def l4_supervisor_node(self, state: AgentState) -> dict:
-        """5. L4 Supervisor - Escalates T4 or finalizes T2/T3."""
+        """5. L4 Supervisor - Escalates T4 or finalizes T2/T3 directly."""
         retry_count = state.get("retry_count", 0)
         route = state.get("route_decision", {}).get("route", "unknown")
         ticket_id = state.get("ticket_id", "UNKNOWN")
@@ -366,9 +360,9 @@ class AgentOrchestrator:
         tool_output = state.get("action_taken", state.get("investigation_results", "No output generated."))
         
         try:
-            l4_tools = [t for t in self.mcp_tools if t.name in ["update_ticket", "check_service_status"]]
-            llm = self.reasoning_llm.bind_tools(l4_tools)
-            
+            # Generate final conversational response
+            # For CAG route, the RAG answer is already good — use fast LLM to rephrase
+            # For T2/T3 routes, use the full chat LLM for more thorough synthesis
             system_prompt, user_prompt = build_synthesiser_prompt(
                 user_message=str(user_message),
                 memory_context=memory_context,
@@ -376,34 +370,34 @@ class AgentOrchestrator:
                 tool_output=tool_output
             )
             
-            response = await llm.ainvoke([
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Ticket ID: {ticket_id}\n\n{user_prompt}\n\nVerify and close the ticket if resolved."}
-            ])
+            synth_llm = self.llm_fast if route == "cag" else self.llm_chat
             
-            supervisor_logs = ""
-            if response.tool_calls:
-                tool_calls_to_run = response.tool_calls[:3]
-                logger.info(f"👔 [L4 Supervisor] LLM requested {len(response.tool_calls)} tool call(s). Executing max {len(tool_calls_to_run)}.")
-                for tc in tool_calls_to_run:
-                    if tc["name"] in ["update_ticket", "perform_system_action"]:
-                        # Force the correct ticket_id if LLM forgot or used UNKNOWN
-                        if tc["args"].get("ticket_id") in ["UNKNOWN", None, ""]:
-                            tc["args"]["ticket_id"] = ticket_id
-                            
-                        res = await self.mcp_invoke("machina-crm", tc["name"], tc["args"])
-                        supervisor_logs += f"[{tc['name']}] -> {res}\n"
-                    
-            # Fallback text if LLM just called tools without generating a response string
+            # Run ticket update and LLM synthesis in PARALLEL
+            import asyncio
+            
+            async def _update_ticket():
+                if self.crm_tool and ticket_id != "UNKNOWN":
+                    await self.crm_tool.adispatch("update_ticket", {
+                        "ticket_id": ticket_id,
+                        "status": "resolved",
+                        "resolution_notes": tool_output
+                    })
+            
+            async def _synthesize():
+                msgs = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Ticket ID: {ticket_id}\n\n{user_prompt}\n\nPlease generate a friendly final response explaining the resolution."}
+                ]
+                ans = ""
+                from langchain_core.messages import AIMessage
+                async for chunk in synth_llm.astream(msgs, config={"tags": ["final_synthesis"]}):
+                    if chunk.content:
+                        ans += chunk.content
+                return AIMessage(content=ans)
+            
+            _, response = await asyncio.gather(_update_ticket(), _synthesize())
+            
             final_ans = response.content
-            if not final_ans:
-                # If LLM produces tool calls but no output content, ask it to summarize the L3 action into a friendly final response
-                summary_prompt = f"The issue was resolved with the following actions:\n{tool_output}\n\nPlease generate a friendly final response to the user explaining how the issue was resolved."
-                summary_response = await self.reasoning_llm.ainvoke([
-                    {"role": "user", "content": summary_prompt}
-                ])
-                final_ans = summary_response.content if summary_response.content else tool_output
-            
             logger.info(f"👔 [L4 Supervisor] Final answer generated ({len(final_ans)} chars)")
             return {"final_answer": final_ans}
         except Exception as e:
@@ -434,13 +428,6 @@ class AgentOrchestrator:
             if self.distiller.should_distill(recent_turns):
                 self.distiller.distill(user_id, recent_turns)
                 logger.info(f"💾 [Memory Save] LT distillation triggered")
-                
-            # Also capture the episode
-            all_turns = self.st_store.recent(user_id, session_id, k=100)
-            if len(all_turns) >= 2:
-                episode = create_episode_from_turns(user_id, session_id, all_turns, self.reasoning_llm)
-                self.ep_store.store_episode(episode)
-                logger.info(f"💾 [Memory Save] Episodic memory saved for session {session_id}")
                 
         except Exception as e:
             logger.error(f"❌ [Memory Save] Failed: {e}")
@@ -509,32 +496,181 @@ class AgentOrchestrator:
 # Setup Factory
 # ---------------------------------------------------------------------------
 
-async def build_agent_mcp() -> AgentOrchestrator:
-    """
-    Initializes MCP client and dependencies, and returns an AgentOrchestrator instance.
-    """
-    logger.info("Building AgentOrchestrator and connecting to MCP servers...")
-    config = build_mcp_server_config()
-    mcp_client = MultiServerMCPClient(config)
-    # Initialize connection here so TaskGroups bind to the main event loop
-    # instead of inside transient LangGraph node contexts.
-    tools = await mcp_client.get_tools()
-    logger.info("MCP client initialized and tools loaded.")
-    
-    embedder = get_default_embeddings()
-    llm_reasoning = get_chat_llm()
+def build_agent(enable_crm: bool = True, enable_rag: bool = True) -> AgentOrchestrator:
+    """Builds the Multi-Agent Orchestrator."""
+    from infrastructure.llm.llm_provider import (
+        get_chat_llm,
+        get_fast_chat_llm,
+        get_router_llm,
+        get_extractor_llm,
+    )
+    from infrastructure.llm.embeddings import get_default_embeddings
+    from memory.st_store import ShortTermMemoryStore
+    from memory.lt_store import LongTermMemoryStore
+    from memory.memory_ops import MemoryRecaller, MemoryDistiller
+
+    llm_chat = get_chat_llm(temperature=0)
+    llm_fast = get_fast_chat_llm(temperature=0)
     llm_router = get_router_llm(temperature=0)
-    
+    llm_extractor = get_extractor_llm(temperature=0)
+    embedder = get_default_embeddings()
+
     st_store = ShortTermMemoryStore()
     lt_store = LongTermMemoryStore(embedder)
-    ep_store = EpisodicMemoryStore(embedder)
-    
+    recaller = MemoryRecaller(st_store, lt_store)
+    distiller = MemoryDistiller(llm=llm_extractor, lt_store=lt_store)
+
+    crm_tool = None
+    if enable_crm:
+        try:
+            from agents.tools import CRMTool
+            crm_tool = CRMTool()
+            logger.info("CRM tool initialised")
+        except Exception as e:
+            logger.warning(f"CRM tool unavailable: {e}")
+
+    rag_tool = None
+    if enable_rag:
+        try:
+            from agents.tools import RAGTool
+            rag_tool = RAGTool(embedder=embedder, llm=llm_fast)
+            logger.info("RAG tool initialised")
+        except Exception as e:
+            logger.warning(f"RAG tool unavailable: {e}")
+
     return AgentOrchestrator(
-        mcp_client=mcp_client,
-        reasoning_llm=llm_reasoning,
-        router_llm=llm_router,
+        llm_chat=llm_chat,
+        llm_fast=llm_fast,
+        llm_router=llm_router,
+        llm_guardrail=llm_extractor,
         st_store=st_store,
         lt_store=lt_store,
-        ep_store=ep_store,
-        mcp_tools=tools
+        recaller=recaller,
+        distiller=distiller,
+        crm_tool=crm_tool,
+        rag_tool=rag_tool,
     )
+
+
+# ── MCP-backed factory (teaching demo) ─────────────────────────
+
+async def _mcp_invoke_async(tool, params: dict) -> str:
+    """
+    Direct async invocation to avoid blocking nodes and reduce latency.
+    """
+    clean = {k: v for k, v in (params or {}).items() if v is not None}
+    raw = await tool.ainvoke(clean)
+    if isinstance(raw, list):
+        return "\n".join(
+            item.get("text", str(item))
+            for item in raw
+            if isinstance(item, dict)
+        ) or str(raw)
+    return str(raw)
+
+class _MCPCRMToolAdapter:
+    """
+    Adapter: MCP CRM tools → CRMTool interface.
+    """
+    _ACTION_TO_TOOL = {
+        "create_ticket": "create_ticket",
+        "update_ticket": "update_ticket",
+        "check_user_clearance": "check_user_clearance",
+        "get_asset_health": "get_asset_health",
+        "check_service_status": "check_service_status",
+        "check_incident_history": "check_incident_history",
+        "perform_system_action": "perform_system_action",
+    }
+
+    def __init__(self, tools_by_name: dict):
+        self._tools = tools_by_name
+
+    async def adispatch(self, action: str, params: dict) -> str:
+        tool_name = self._ACTION_TO_TOOL.get(action)
+        if not tool_name or tool_name not in self._tools:
+            return f"Unavailable CRM action: {action}."
+        try:
+            return await _mcp_invoke_async(self._tools[tool_name], params)
+        except Exception as exc:
+            logger.error(f"MCP CRM tool '{tool_name}' failed: {exc}")
+            return f"Error: {exc}"
+
+class _MCPRAGToolAdapter:
+    """
+    Adapter: MCP RAG tools → RAGTool interface.
+    """
+    _ACTION_TO_TOOL = {
+        "search": "rag_search",
+        "cache_stats": "cache_stats",
+        "clear_cache": "clear_cache",
+    }
+
+    def __init__(self, tools_by_name: dict):
+        self._tools = tools_by_name
+
+    async def adispatch(self, action: str, params: dict) -> str:
+        tool_name = self._ACTION_TO_TOOL.get(action)
+        if not tool_name or tool_name not in self._tools:
+            return f"Unavailable RAG action: {action}."
+        try:
+            return await _mcp_invoke_async(self._tools[tool_name], params)
+        except Exception as exc:
+            logger.error(f"MCP RAG tool '{tool_name}' failed: {exc}")
+            return f"Error: {exc}"
+
+
+async def build_agent_mcp() -> AgentOrchestrator:
+    """
+    MCP-backed variant of build_agent() — ALL tools via MCP.
+    """
+    from infrastructure.llm.llm_provider import (
+        get_chat_llm, get_router_llm, get_extractor_llm
+    )
+    from infrastructure.llm.embeddings import get_default_embeddings
+    from memory.st_store import ShortTermMemoryStore
+    from memory.lt_store import LongTermMemoryStore
+    from memory.memory_ops import MemoryRecaller, MemoryDistiller
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+
+    from mcp_servers.mcp_config import build_mcp_server_config
+
+    llm_chat = get_chat_llm(temperature=0)
+    llm_router = get_router_llm(temperature=0)
+    llm_extractor = get_extractor_llm(temperature=0)
+    embedder = get_default_embeddings()
+
+    st_store = ShortTermMemoryStore()
+    lt_store = LongTermMemoryStore(embedder)
+    recaller = MemoryRecaller(st_store, lt_store)
+    distiller = MemoryDistiller(llm=llm_extractor, lt_store=lt_store)
+
+    server_config = build_mcp_server_config()
+    logger.info(f"Connecting to MCP servers: {list(server_config.keys())}")
+    mcp_client = MultiServerMCPClient(server_config)
+
+    all_tools = await mcp_client.get_tools()
+    tools_by_name = {t.name: t for t in all_tools}
+    logger.info(f"Loaded {len(all_tools)} tools via MCP: {list(tools_by_name.keys())}")
+
+    crm_tool = _MCPCRMToolAdapter(tools_by_name)
+    logger.info("CRM tool backed by machina-crm MCP server")
+
+    rag_tool = _MCPRAGToolAdapter(tools_by_name)
+    logger.info("RAG tool backed by machina-rag MCP server")
+
+    orchestrator = AgentOrchestrator(
+        llm_chat=llm_chat,
+        llm_router=llm_router,
+        llm_guardrail=llm_extractor,
+        st_store=st_store,
+        lt_store=lt_store,
+        recaller=recaller,
+        distiller=distiller,
+        crm_tool=crm_tool,
+        rag_tool=rag_tool,
+    )
+
+    orchestrator.mcp_client = mcp_client
+    orchestrator.mcp_tools = tools_by_name
+
+    return orchestrator

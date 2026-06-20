@@ -169,11 +169,28 @@ For **T4 (Critical Outage)** scenarios like a total system crash, the Swarm exec
 
 ## 🛠️ Usage
 
-To run the complete end-to-end data ingestion pipeline:
+### Running the Application
 
+This project consists of two servers: the FastAPI backend and the React UI frontend.
+
+**1. Start the Backend Server (FastAPI)**
 ```bash
-python src/services/ingest_service/pipeline.py
+python src/api/run.py
 ```
+This will start the API server at `http://localhost:8000`.
+
+**2. Start the Frontend Server (React + Vite)**
+```bash
+cd ui
+npm install
+npm run dev
+```
+This will start the UI server at `http://localhost:5173`.
+
+### API Endpoints
+
+The primary endpoint used by the UI for real-time agent responses is:
+- **`POST /chat/stream`**: Returns Server-Sent Events (SSE) representing the Swarm's chain-of-thought and the final answer. Requires a JSON payload: `{"user_id": "EMP-...", "session_id": "...", "message": "..."}`.
 
 ## 🤖 Model Context Protocol (MCP) Integration
 

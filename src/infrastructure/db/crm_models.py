@@ -9,6 +9,12 @@ the database.
 from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, Field
+import time
+
+from sqlalchemy import Column, String, Integer
+from sqlalchemy.orm import declarative_base
+
+Base = declarative_base()
 
 
 # ---------------------------------------------------------------------------
@@ -135,3 +141,28 @@ class PerformActionRequest(BaseModel):
     ticket_id: str = Field(..., min_length=1, max_length=50)
     action_type: str = Field(..., min_length=1, max_length=100)
     resolution_notes: str = Field(..., min_length=1, max_length=5000)
+
+class ChatSession(Base):
+    """ChatGPT-style conversation thread for a patient."""
+
+    __tablename__ = "chat_sessions"
+
+    session_id      = Column(String, primary_key=True)
+    employer_id      = Column(String, nullable=False, index=True)
+    title           = Column(String, nullable=False)
+    last_message_at = Column(Integer)                                  # epoch seconds
+    created_at      = Column(Integer, default=lambda: int(time.time()))
+    updated_at      = Column(Integer, default=lambda: int(time.time()),
+                              onupdate=lambda: int(time.time()))
+    archived        = Column(Integer, nullable=False, default=0)
+
+    def to_dict(self):
+        return {
+            "session_id": self.session_id,
+            "employer_id": self.employer_id,
+            "title": self.title,
+            "last_message_at": self.last_message_at,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "archived": int(self.archived or 0),
+        }

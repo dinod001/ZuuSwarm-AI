@@ -277,6 +277,18 @@ def check_asset_status(asset_name: str) -> Optional[AssetStatusResponse]:
         raise
 
 
+def get_all_asset_names() -> list[str]:
+    """Retrieve all asset names from the inventory."""
+    engine = get_sql_engine()
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT name FROM assets_inventory"))
+            return [row[0] for row in result.fetchall()]
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch asset names: {e}")
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Service operations
 # ---------------------------------------------------------------------------
@@ -318,6 +330,18 @@ def check_service_health(service_name: str) -> Optional[ServiceHealthResponse]:
     except Exception as e:
         logger.error(f"❌ Failed to check service '{service_name}': {e}")
         raise
+
+
+def get_all_service_names() -> list[str]:
+    """Retrieve all service names."""
+    engine = get_sql_engine()
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT name FROM services"))
+            return [row[0] for row in result.fetchall()]
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch service names: {e}")
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -460,12 +484,12 @@ def perform_system_action(
 
 def check_user_clearance(email: str) -> Optional[int]:
     """
-    Check an employee's SQL clearance level by their email.
+    Check an employee's SQL clearance level by their email or ID.
     
     Used by the CAG Fastpath to verify authorization for T1 requests.
     
     Args:
-        email: Employee email address
+        email: Employee email address or ID (e.g. EMP-0080)
         
     Returns:
         Clearance level (1-5) or None if employee not found.
@@ -478,13 +502,13 @@ def check_user_clearance(email: str) -> Optional[int]:
     try:
         with engine.connect() as conn:
             result = conn.execute(
-                text("SELECT clearance_level FROM employees WHERE email = :email"),
-                {"email": email},
+                text("SELECT clearance_level FROM employees WHERE email = :val OR id = :val"),
+                {"val": email},
             )
             row = result.scalar()
 
         if row is None:
-            logger.info(f"Employee with email '{email}' not found")
+            logger.info(f"Employee with email/id '{email}' not found")
             return None
 
         return int(row)

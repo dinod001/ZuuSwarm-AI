@@ -139,6 +139,16 @@ def check_user_clearance(email: str) -> str:
     """Check an employee's SQL clearance level by their email."""
     return _get_crm().dispatch("check_user_clearance", {"email": email})
 
+@mcp.tool()
+def get_all_asset_names() -> str:
+    """Get a list of all valid asset names in the system."""
+    return _get_crm().dispatch("get_all_asset_names", {})
+
+@mcp.tool()
+def get_all_service_names() -> str:
+    """Get a list of all valid service names in the system."""
+    return _get_crm().dispatch("get_all_service_names", {})
+
 
 # ── Entry point ────────────────────────────────────────────────
 

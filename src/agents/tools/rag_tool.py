@@ -166,3 +166,8 @@ class RAGTool:
             self.clear_cache()
             return "CAG cache cleared."
         return f"Unknown action: {action}"
+
+    async def adispatch(self, action: str, params: dict) -> str:
+        """Async wrapper for dispatch."""
+        import asyncio
+        return await asyncio.to_thread(self.dispatch, action, params)
