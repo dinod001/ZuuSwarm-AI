@@ -7,6 +7,12 @@ logger = get_logger(__name__)
 
 GuardrailVerdict = Literal["in_scope", "out_of_scope"]
 
+OUT_OF_SCOPE_REPLY = (
+    "I'm sorry, but that question is outside my IT operations domain. "
+    "I can help with system incidents, access issues, asset provisioning, "
+    "service health monitoring, and IT runbook retrieval."
+)
+
 # THIS IS THE GURADARIN PROMPT 
 #DEINF WHAT INSSIDE SCOPE , WHAT IS OUT OF SCOPE 
 _GUARDRAIL_SYSTEM = """\
@@ -23,6 +29,9 @@ IN-SCOPE — the assistant should help with:
   • Executing system actions, analyzing observability metrics (CPU, memory)
   • Greetings, small talk, thanks (these are still in-scope; the
     main assistant handles them)
+  • Follow-up questions about previous responses ("how did you fix it?",
+    "explain that again", "are you sure?", "give me details")
+  • ANY message that references a prior conversation or asks for clarification
 
 OUT-OF-SCOPE — politely refuse:
   • General world knowledge (presidents, capitals, sports, history,
@@ -47,6 +56,11 @@ Examples:
   USER: "Can you check the Redis memory usage?"     → in_scope
   USER: "I need a new laptop provisioned."          → in_scope
   USER: "Hey there, I need help with an IT issue"   → in_scope
+  USER: "How did you fix it?"                       → in_scope
+  USER: "Can you explain that again?"               → in_scope
+  USER: "Give me a short explanation"               → in_scope
+  USER: "Are you sure about that?"                  → in_scope
+  USER: "Thanks for helping!"                       → in_scope
   USER: "Who is the president of the USA?"          → out_of_scope
   USER: "What's the weather in Sri Lanka?"          → out_of_scope
   USER: "Write me a Python script to sort a list"   → out_of_scope

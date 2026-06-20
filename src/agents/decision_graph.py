@@ -54,7 +54,13 @@ def make_guardrail_node(guardrail: Guardrail):
     ) -> Dict[str, Any]:
         t0 = time.perf_counter()
         try:
-            verdict = await guardrail.aclassify(state["message"])
+            # Pass conversation context so follow-ups like "how did you fix it"
+            # are correctly classified as in_scope when prior turns are IT-related
+            context = state.get("router_context", "")
+            msg_with_context = state["message"]
+            if context:
+                msg_with_context = f"[Conversation context: {context[-500:]}]\nCurrent message: {state['message']}"
+            verdict = await guardrail.aclassify(msg_with_context)
         except Exception as exc:
             logger.warning("Guardrail node failed (defaulting in_scope): {}", exc)
             verdict = "in_scope"
@@ -109,7 +115,7 @@ def decide_node(
     primary = state.get("decision", {})
     
     # 3. Determine primary route based on decision
-    if primary and primary.get("route") in ["cag", "l2_investigator", "l3_resolver", "voice"]:
+    if primary and primary.get("route") in ["cag", "l2_investigator", "l3_resolver", "voice", "direct_chat"]:
         return {
             "verdict": "main_router",
             "primary_route": primary["route"],

@@ -10,7 +10,7 @@ from agents.prompts.agent_prompts import build_l1_triage_prompt
 class RouteDecision(BaseModel):
     ticket_type: str = Field(description="T1, T2, T3, or T4")
     severity: str = Field(description="low, medium, or critical")
-    route: str = Field(description="cag, l2_investigator, l3_resolver, or voice")
+    route: str = Field(description="cag, l2_investigator, l3_resolver, voice, or direct_chat")
     reasoning: str = Field(description="one-sentence technical explanation")
 
 def _extract_json(text: str) -> dict:

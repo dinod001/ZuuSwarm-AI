@@ -19,6 +19,8 @@ from services.crm_service.crm_db_client import (
     perform_system_action,
     update_ticket_status,
     check_user_clearance,
+    get_all_asset_names,
+    get_all_service_names,
 )
 
 
@@ -139,6 +141,16 @@ class ObservabilityTool:
             f"Version: {service.version or 'N/A'}"
         )
 
+    def get_all_asset_names(self) -> str:
+        """Get a list of all asset names."""
+        names = get_all_asset_names()
+        return ", ".join(names) if names else "None"
+
+    def get_all_service_names(self) -> str:
+        """Get a list of all service names."""
+        names = get_all_service_names()
+        return ", ".join(names) if names else "None"
+
 
 
 
@@ -237,6 +249,15 @@ class CRMTool:
         elif action == "check_user_clearance":
             clearance = check_user_clearance(**params)
             return str(clearance) if clearance is not None else "Unknown"
+        elif action == "get_all_asset_names":
+            return self.observability.get_all_asset_names()
+        elif action == "get_all_service_names":
+            return self.observability.get_all_service_names()
         return f"Unknown action: {action}"
+
+    async def adispatch(self, action: str, params: dict) -> str:
+        """Async wrapper for dispatch."""
+        import asyncio
+        return await asyncio.to_thread(self.dispatch, action, params)
 
 
