@@ -36,7 +36,20 @@ from infrastructure.llm.llm_provider import get_chat_llm, get_router_llm
 from agents.guardrail import Guardrail
 from agents.decision_graph import build_decision_graph
 from agents.router import QueryRouter
+from dataclasses import dataclass, field
 
+@dataclass
+class AgentResponse:
+    """
+    Complete agent response with metadata for the UI/Notebooks and Voice Layer.
+    """
+    answer: str
+    route: str = "direct"
+    routes: List[str] = field(default_factory=list)
+    action: Optional[str] = None
+    tool_output: str = ""
+    memory_context: str = ""
+    latency_ms: int = 0
 
 class AgentOrchestrator:
     """
@@ -384,15 +397,26 @@ class AgentOrchestrator:
                     })
             
             async def _synthesize():
+                if route in ("voice", "l4_voice"):
+                    from langchain_core.messages import AIMessage
+                    ans = state.get("final_answer", "I have detected a critical IT issue. Escalating to the Voice response team automatically. Please hold...")
+                    emit_cb = state.get("emit")
+                    if emit_cb:
+                        await emit_cb({"type": "token", "content": ans})
+                    return AIMessage(content=ans)
+
                 msgs = [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"Ticket ID: {ticket_id}\n\n{user_prompt}\n\nPlease generate a friendly final response explaining the resolution."}
                 ]
                 ans = ""
                 from langchain_core.messages import AIMessage
+                emit_cb = state.get("emit")
                 async for chunk in synth_llm.astream(msgs, config={"tags": ["final_synthesis"]}):
                     if chunk.content:
                         ans += chunk.content
+                        if emit_cb:
+                            await emit_cb({"type": "token", "content": chunk.content})
                 return AIMessage(content=ans)
             
             _, response = await asyncio.gather(_update_ticket(), _synthesize())
@@ -491,6 +515,282 @@ class AgentOrchestrator:
         
         return workflow.compile()
 
+    # ── Voice Fast Path ────────────────────────────────────────
+
+    async def achat_stream_fast(
+        self,
+        user_message: str,
+        user_id: str,
+        session_id: str,
+    ):
+        """Single-LLM streaming path for voice. Yields chunks for TTS synthesis."""
+        import asyncio as _asyncio
+        from langchain_core.messages import SystemMessage, HumanMessage
+
+        t_start = time.perf_counter()
+
+        # 1. Gather Memory Context
+        memory_context = ""
+        cache = getattr(self, "_voice_ctx_cache", None)
+        if cache is None:
+            cache = self._voice_ctx_cache = {}
+        cached_turns = cache.get(session_id)
+        if cached_turns:
+            memory_context = self.recaller.format_context(cached_turns)
+        else:
+            try:
+                recent = await _asyncio.wait_for(
+                    _asyncio.to_thread(self.st_store.recent, user_id, session_id, 6),
+                    timeout=0.6,
+                )
+                if recent:
+                    memory_context = self.recaller.format_context(recent)
+                    cache[session_id] = list(recent)
+            except _asyncio.TimeoutError:
+                logger.warning("voice: first-turn memory fetch slow (>0.6s) — proceeding")
+            except Exception as e:
+                logger.debug(f"voice: memory fetch failed (non-fatal): {e}")
+
+        tool_output = ""
+        route = "direct_chat"
+        was_cancelled = False
+        running = ""
+
+        # 2. Classification (Guardrail + Router)
+        try:
+            decision_state = await self.decision_graph.ainvoke({
+                "message": user_message,
+                "router_context": memory_context,
+            })
+            guardrail_verdict = decision_state.get("guardrail", "in_scope")
+            decision = decision_state.get("decision", {})
+            route = decision.get("route", "direct_chat")
+            
+            # Short-circuit: Out of scope
+            if guardrail_verdict == "out_of_scope":
+                refusal = "I'm sorry, but that question is outside my IT operations domain. How else can I help you today?"
+                yield ("token", refusal)
+                yield ("partial", refusal)
+                await self._save_voice_turn_async(user_id=user_id, session_id=session_id, user_message=user_message, assistant_message=refusal, was_interrupted=False)
+                from api.schemas import ChatResponse
+                yield ("final", ChatResponse(answer=refusal, route="out_of_scope", latency_ms=int((time.perf_counter() - t_start) * 1000)))
+                return
+
+            # Short-circuit: Direct chat (no heavy tools needed)
+            if route == "direct_chat":
+                # Skip manual orchestration entirely, use final fast LLM prompt below
+                pass
+            else:
+                # Heavy path: CAG or L2/L3 workflow
+                filler1 = "I am looking into this for you right now... "
+                yield ("token", filler1)
+                running += filler1
+                yield ("partial", running)
+
+                q = _asyncio.Queue()
+
+                async def _q_emit(ev):
+                    if ev.get("type") == "voice_filler":
+                        await q.put(ev["content"])
+
+                state = {
+                    "messages": [HumanMessage(content=user_message)],
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "user_email": user_id,
+                    "memory_context": memory_context,
+                    "route_decision": decision,
+                    "retry_count": 0,
+                    "emit": _q_emit,
+                }
+
+                # Background task for the graph execution
+                async def run_manual_graph():
+                    # L1 Triage
+                    out1 = await self.l1_triage_node(state)
+                    state.update(out1)
+                    current_route = state.get("route_decision", {}).get("route", route)
+
+                    if current_route == "cag":
+                        out = await self.cag_fastpath_node(state)
+                        state.update(out)
+                    elif current_route in ("l2_investigator", "l4_voice"):
+                        await _q_emit({"type": "voice_filler", "content": "I'm starting to investigate the issue right now. "})
+                        # L2 Investigate
+                        out2 = await self.l2_investigator_node(state)
+                        state.update(out2)
+                        # L3 Resolve
+                        out3 = await self.l3_resolver_node(state)
+                        state.update(out3)
+                        
+                        # We do NOT loop retries on voice to keep latency bounded
+                    
+                    await q.put(None) # Signal completion
+                    return state
+
+                task = _asyncio.create_task(run_manual_graph())
+                
+                try:
+                    while True:
+                        try:
+                            item = await _asyncio.wait_for(q.get(), timeout=8.0)
+                            if item is None:
+                                break
+                            yield ("token", item)
+                            running += item
+                            yield ("partial", running)
+                        except _asyncio.TimeoutError:
+                            if not task.done():
+                                filler2 = "Still checking the systems, please bear with me... "
+                                yield ("token", filler2)
+                                running += filler2
+                                yield ("partial", running)
+                except _asyncio.CancelledError:
+                    task.cancel()
+                    raise
+
+                final_state = task.result()
+                
+                # Build context for final TTS synthesis
+                if final_state.get("cag_context"):
+                    tool_output = f"KNOWLEDGE: {final_state.get('cag_context')}"
+                else:
+                    inv = final_state.get("investigation_results", "")
+                    act = final_state.get("action_taken", "")
+                    tool_output = ""
+                    if inv: tool_output += f"INVESTIGATION: {inv}\n"
+                    if act: tool_output += f"RESOLUTION: {act}\n"
+
+        except _asyncio.CancelledError:
+            was_cancelled = True
+            logger.info(f"voice: cancelled mid-stream (barge-in) during orchestration.")
+            return
+        except Exception as e:
+            logger.warning(f"voice: orchestration failed (non-fatal): {e}")
+
+        # 3. Final Voice Synthesis
+        system = (
+            "You are the ZuuSwarm AI IT Operations voice assistant on a live phone "
+            "call. Keep replies short, warm, conversational — under three "
+            "sentences. No markdown, no tables, no bullet points, no asterisks. "
+            "The caller is listening, not reading; read names and numbers naturally.\n\n"
+            "Conversation rules:\n"
+            "- STAY on the current IT issue or access request.\n"
+            "- If the caller asks to check a ticket, ask for the ticket number if you don't know it.\n"
+            "- If the information below doesn't answer the question, say so in "
+            "one short sentence and offer to create a new ticket — never invent facts.\n\n"
+            "IT quick facts:\n"
+            "- The IT Helpdesk is available 24/7 for critical P1/P2 issues.\n"
+            "- Routine access requests may take up to 24 hours.\n\n"
+        )
+        if tool_output:
+            system += (
+                "Answer using ONLY the information below — it is the live source "
+                "of truth from the IT systems. Do NOT invent details.\n\n"
+                f"=== INFORMATION ===\n{tool_output}\n\n"
+            )
+        system += f"=== RECENT CONVERSATION ===\n{memory_context}"
+        
+        messages = [
+            SystemMessage(content=system),
+            HumanMessage(content=user_message),
+        ]
+
+        llm = getattr(self, "llm_fast", self.llm_chat)
+        answer_parts: list[str] = []
+
+        try:
+            async for chunk in llm.astream(messages):
+                content = getattr(chunk, "content", None)
+                if not content:
+                    continue
+                answer_parts.append(content)
+                running += content
+                yield ("token", content)
+                yield ("partial", running)
+                await _asyncio.sleep(0)
+        except _asyncio.CancelledError:
+            was_cancelled = True
+            logger.info(f"voice: cancelled mid-stream (barge-in) during synthesis.")
+
+        answer_final = "".join(answer_parts).strip()
+        latency = int((time.perf_counter() - t_start) * 1000)
+
+        if answer_final or running:
+            await self._save_voice_turn_async(
+                user_id=user_id,
+                session_id=session_id,
+                user_message=user_message,
+                assistant_message=running,
+                was_interrupted=was_cancelled,
+            )
+
+        if was_cancelled:
+            return
+
+        from api.schemas import ChatResponse
+        yield (
+            "final",
+            ChatResponse(
+                answer=running,
+                route=route,
+                latency_ms=latency,
+            ),
+        )
+
+    async def _voice_dispatch_tool(self, decision, *, reported_by, fallback_query=""):
+        route = decision.get("route", "direct") if isinstance(decision, dict) else "direct"
+        try:
+            if route in ("cag_fastpath", "l3_resolver") and self.rag_tool is not None:
+                return await self.rag_tool.adispatch("search", {"query": fallback_query})
+            if route == "l2_investigator" and self.crm_tool is not None:
+                return await self.crm_tool.adispatch("create_ticket", {
+                    "issue_description": fallback_query,
+                    "ticket_type": decision.get("ticket_type", "T2"),
+                    "severity": decision.get("severity", "medium"),
+                    "reported_by": reported_by,
+                })
+        except Exception as e:
+            logger.warning(f"voice: tool dispatch ({route}) failed: {e}")
+        return ""
+
+    async def _save_voice_turn_async(self, *, user_id, session_id, user_message, assistant_message, was_interrupted):
+        import asyncio as _asyncio
+        stored_assistant = f"[interrupted] {assistant_message}" if was_interrupted and assistant_message else assistant_message
+        
+        def _do_save():
+            try:
+                now = time.time()
+                self.st_store.add(user_id, session_id, ConversationTurn(user_id=user_id, session_id=session_id, role="user", content=user_message, ts=now))
+                self.st_store.add(user_id, session_id, ConversationTurn(user_id=user_id, session_id=session_id, role="assistant", content=stored_assistant, ts=now))
+                
+                try:
+                    _cache = getattr(self, "_voice_ctx_cache", None)
+                    if _cache is None:
+                        _cache = self._voice_ctx_cache = {}
+                    _turns = list(_cache.get(session_id) or [])
+                    _turns.append(ConversationTurn(user_id=user_id, session_id=session_id, role="user", content=user_message, ts=now))
+                    _turns.append(ConversationTurn(user_id=user_id, session_id=session_id, role="assistant", content=stored_assistant, ts=now))
+                    _cache[session_id] = _turns[-6:]
+                except Exception: pass
+                
+                # Long-term distillation
+                if not was_interrupted and hasattr(self, "distiller"):
+                    try:
+                        recent = self.st_store.recent(user_id, session_id, k=5)
+                        if self.distiller.should_distill(recent):
+                            logger.info(f"voice: distilling LT facts for {user_id}")
+                            self.distiller.distill(user_id, recent)
+                    except Exception as e:
+                        logger.debug(f"voice: distillation failed (non-fatal): {e}")
+
+            except Exception as e:
+                logger.warning(f"voice: memory write failed: {e}")
+
+        try:
+            await _asyncio.to_thread(_do_save)
+        except Exception as e:
+            logger.warning(f"voice: save task failed: {e}")
 
 # ---------------------------------------------------------------------------
 # Setup Factory

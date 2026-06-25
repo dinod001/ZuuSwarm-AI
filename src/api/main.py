@@ -20,6 +20,7 @@ from api.routers import chat_sessions as chat_sessions_router
 from api.routers import chat as chat_router
 from api.routers import health as health_router
 from api.routers import auth as auth_router
+from api.routers import voice as voice_router
 
 # Tool routers (Currently disabled/missing in ZuuSwarm)
 # from api.routers.tools import cag as cag_router
@@ -98,7 +99,11 @@ async def lifespan(app: FastAPI):
         build_agent, enable_crm=True, enable_rag=True
     )
     embedder = agent.rag_tool.embedder if agent.rag_tool else get_default_embeddings()
-    local_embedder = await asyncio.to_thread(get_local_embedder)
+    try:
+        local_embedder = await asyncio.to_thread(get_local_embedder)
+    except Exception as e:
+        logger.error(f"Failed to load local embedder (network issue?): {e}")
+        local_embedder = None
 
     try:
         from infrastructure.db.qdrant_client import get_qdrant_client, collection_exists
@@ -109,12 +114,15 @@ async def lifespan(app: FastAPI):
     except Exception as _exc:
         logger.warning("CAG cache_local purge skipped: {}", _exc)
 
-    cag_cache = await asyncio.to_thread(
-        CAGCache,
-        local_embedder,
-        "cag_cache_local",
-        local_embedder.dim,
-    )
+    if local_embedder is not None:
+        cag_cache = await asyncio.to_thread(
+            CAGCache,
+            local_embedder,
+            "cag_cache_local",
+            local_embedder.dim,
+        )
+    else:
+        cag_cache = None
 
     if agent.rag_tool is not None:
         agent.rag_tool._cache = cag_cache
@@ -159,8 +167,9 @@ install_middleware(app)
 # Include core routers
 app.include_router(health_router.router, prefix="/api/v1/health", tags=["System"])
 app.include_router(chat_router.router, prefix="/api/v1", tags=["Chat"])
-app.include_router(chat_sessions_router.router, prefix="/api/v1/sessions", tags=["Sessions"])
+app.include_router(chat_sessions_router.router, prefix="/api/v1", tags=["Sessions"])
 app.include_router(auth_router.router, prefix="/api/v1/auth", tags=["Auth"])
+app.include_router(voice_router.router, prefix="/api/v1", tags=["Voice"])
 
 # Include Tool routers (Disabled)
 # app.include_router(cag_router.router, prefix="/api/v1/tools/cag", tags=["Tools - CAG"])

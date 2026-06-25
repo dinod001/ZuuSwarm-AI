@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import logoUrl from '../assets/logo.png';
 
 interface LoginScreenProps {
   onLogin: (email: string) => void;
@@ -17,8 +16,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
 
   return (
     <div className="login-container">
+      <div className="ambient-orb-1"></div>
+      <div className="ambient-orb-2"></div>
       <div className="login-card">
-        <img src={logoUrl} alt="ZuuSwarm AI Logo" className="login-logo" />
+        <img src="/logo.png" alt="ZuuSwarm AI Logo" className="login-logo" />
         <h2>ZuuSwarm Operations</h2>
         <p className="login-subtitle">Enter your employee email to access the IT Ops Swarm.</p>
         

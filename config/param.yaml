@@ -148,11 +148,14 @@ voice:
 
   # ── TTS: ElevenLabs Turbo v2.5 (premium voices, ~250ms TTFB) ──────────
   # Switch to "deepgram" + tts_model "aura-2-andromeda-en" to use Deepgram TTS instead.
-  tts_provider: elevenlabs
-  tts_model: eleven_turbo_v2_5         # low-latency model — recommended for voice agents
-  tts_voice_id: l7kNoIfnJKPg7779LI2t   # "Aria" (ElevenLabs default). Browse voices at
-                                       # https://elevenlabs.io/app/voice-library — paste the voice
-                                       # ID here to swap. Premium-only voices work with a paid key.
+  # tts_provider: elevenlabs
+  # tts_model: eleven_turbo_v2_5         # low-latency model — recommended for voice agents
+  # tts_voice_id: l7kNoIfnJKPg7779LI2t   # "Aria" (ElevenLabs default). Browse voices at
+  #                                      # https://elevenlabs.io/app/voice-library — paste the voice
+  #                                      # ID here to swap. Premium-only voices work with a paid key.
+
+  tts_provider: deepgram
+  tts_model: aura-2-andromeda-en
 
   # ── VAD + EOU policy ──────────────────────────────────────────────────
   vad_threshold: 0.5                   # Silero P(speech) cutoff

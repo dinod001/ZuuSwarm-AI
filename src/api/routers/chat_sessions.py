@@ -48,7 +48,7 @@ def _session_db():
 def _to_meta(row: ChatSession) -> ChatSessionMeta:
     return ChatSessionMeta(
         session_id=row.session_id,
-        employ_id=row.employ_id,
+        employer_id=row.employer_id,
         title=row.title,
         last_message_at=row.last_message_at,
         created_at=int(row.created_at or 0),
@@ -90,7 +90,7 @@ def touch_session_sync(employ_id: str, session_id: str) -> None:
         if row is None:
             row = ChatSession(
                 session_id=session_id,
-                employ_id=employ_id,
+                employer_id=employ_id,
                 title=_default_title(),
                 last_message_at=now,
                 created_at=now,
@@ -122,7 +122,7 @@ async def list_sessions(
     def _query() -> list[ChatSession]:
         s = _session_db()
         try:
-            q = s.query(ChatSession).filter(ChatSession.employ_id == user_id)
+            q = s.query(ChatSession).filter(ChatSession.employer_id == user_id)
             if not include_archived:
                 q = q.filter(ChatSession.archived == 0)
             q = q.order_by(
@@ -148,13 +148,13 @@ async def create_session(req: ChatSessionCreateRequest) -> ChatSessionMeta:
             existing = s.get(ChatSession, sid)
             if existing is not None:
                 # Treat as upsert: same id, same employ → return existing
-                if existing.employ_id != req.user_id:
+                if existing.employer_id != req.employer_id:
                     raise ValueError(f"session_id {sid} already belongs to another employ")
                 return existing
             now = int(time.time())
             row = ChatSession(
                 session_id=sid,
-                employ_id=req.user_id,
+                employer_id=req.employer_id,
                 title=req.title or _default_title(),
                 last_message_at=None,
                 created_at=now,

@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 
 export type Message = {
   id: string;
@@ -15,6 +15,25 @@ export function useChatStream(userId: string, sessionId: string) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [status, setStatus] = useState<StreamStatus>({ active: false, stageLabel: '' });
   const streamBuf = useRef('');
+
+  useEffect(() => {
+    setMessages([]);
+    if (!sessionId || !userId) return;
+
+    fetch(`http://localhost:8000/api/v1/sessions/${encodeURIComponent(sessionId)}/turns?user_id=${encodeURIComponent(userId)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data && data.turns) {
+          const loaded: Message[] = data.turns.map((t: any, i: number) => ({
+            id: `hist-${i}`,
+            role: t.role,
+            content: t.content
+          }));
+          setMessages(loaded);
+        }
+      })
+      .catch(console.error);
+  }, [sessionId, userId]);
 
   const sendMessage = useCallback(async (text: string) => {
     if (!text.trim()) return;
@@ -92,6 +111,12 @@ export function useChatStream(userId: string, sessionId: string) {
                 });
                 setStatus({ active: false, stageLabel: '' });
                 streamBuf.current = '';
+                break;
+              }
+              case 'action': {
+                if (data.action === 'open_voice') {
+                  window.dispatchEvent(new CustomEvent('zuuswarm:open_voice', { detail: { autoStart: true } }));
+                }
                 break;
               }
               case 'error':

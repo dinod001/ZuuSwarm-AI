@@ -43,6 +43,7 @@ from loguru import logger
 
 from api.deps import get_agent, get_cag_cache, get_st_store
 from api.event_labels import stage_label, tool_label
+from api.routers.chat_sessions import touch_session_sync
 from api.schemas import (
     ChatRequest,
     ChatResetRequest,
@@ -307,6 +308,9 @@ async def _run_chat_pipeline(
             _store_turn_pair, st_store, req.user_id, req.session_id,
             req.message, refusal,
         )
+        background.add_task(
+            touch_session_sync, req.user_id, req.session_id
+        )
         return ChatResponse(
             answer=refusal,
             route="out_of_scope",
@@ -344,6 +348,9 @@ async def _run_chat_pipeline(
             _store_turn_pair, st_store, req.user_id, req.session_id,
             req.message, answer,
         )
+        background.add_task(
+            touch_session_sync, req.user_id, req.session_id
+        )
         return ChatResponse(
             answer=answer,
             route="direct_chat",
@@ -353,75 +360,101 @@ async def _run_chat_pipeline(
             model_used=getattr(agent.llm_fast, "model_name", "unknown"),
         )
 
-    # ── Phase 2 — Run the full LangGraph orchestrator ────────────
-    # The orchestrator handles the entire L1→L2→L3→L4 pipeline
-    # internally. Each node uses direct adispatch to CRM/RAG tools
-    # (no bind_tools), so latency is minimized.
-    #
-    # We also fetch LT context in parallel with the graph invocation
-    # to further reduce total wall-clock time.
+    # ── Phase 2 — Pure Python Orchestration (Direct Dispatch) ────────────
+    # Bypassing LangGraph entirely to eliminate framework overhead while
+    # preserving the multi-agent logic flow.
     t_graph = time.perf_counter()
-    await emit({"type": "stage_start", "stage": "tool",
-                "label": stage_label("tool")})
+    await emit({"type": "stage_start", "stage": "tool", "label": stage_label("tool")})
 
     try:
-        # Build the initial state for the LangGraph
         from langchain_core.messages import HumanMessage as HM
-        initial_state = {
+        state = {
             "messages": [HM(content=req.message)],
             "user_id": req.user_id,
             "session_id": req.session_id,
             "user_email": req.user_email or req.user_id,
             "memory_context": st_context,
             "route_decision": decision,
+            "retry_count": 0,
+            "emit": emit,  # Pass emit callback to state so l4_supervisor_node can stream!
         }
 
-        # Run the LangGraph and LT recall concurrently
         lt_task = asyncio.create_task(_recall_lt_task(req.message))
 
-        graph_result = {}
-        async for event in agent.app.astream_events(initial_state, version="v2"):
-            kind = event["event"]
+        # 1. Triage & Ticket Creation
+        t_node = time.perf_counter()
+        await emit({"type": "stage_start", "stage": "l1_triage_node", "label": stage_label("l1_triage_node")})
+        out1 = await agent.l1_triage_node(state)
+        state.update(out1)
+        await emit({"type": "stage_done", "stage": "l1_triage_node", "ms": _ms(t_node)})
+
+        # Route might have been updated by triage, fallback to phase 1 classification
+        route = state.get("route_decision", {}).get("route", "l2_investigator")
+
+        # 2. Branch Execution
+        if route == "cag":
+            t_node = time.perf_counter()
+            await emit({"type": "stage_start", "stage": "cag_fastpath_node", "label": stage_label("cag_fastpath_node")})
+            out = await agent.cag_fastpath_node(state)
+            state.update(out)
+            await emit({"type": "stage_done", "stage": "cag_fastpath_node", "ms": _ms(t_node)})
+
+        elif route in ("l4_voice", "voice"):
+            await emit({"type": "stage_start", "stage": "l4_voice", "label": "Critical Outage: Escalating to Voice Protocol"})
+            await emit({"type": "action", "action": "open_voice"})
+            state["final_answer"] = "I have detected a critical IT issue. Escalating to the Voice response team automatically. Please hold..."
+
+        else: # l2_investigator
+            t_node = time.perf_counter()
+            await emit({"type": "stage_start", "stage": "l2_investigator_node", "label": stage_label("l2_investigator_node")})
+            out2 = await agent.l2_investigator_node(state)
+            state.update(out2)
+            await emit({"type": "stage_done", "stage": "l2_investigator_node", "ms": _ms(t_node)})
             
-            # 1. Stream tokens from the final synthesis
-            if kind == "on_chat_model_stream":
-                if "final_synthesis" in event.get("tags", []):
-                    chunk = event["data"]["chunk"]
-                    if hasattr(chunk, "content") and chunk.content:
-                        await emit({"type": "token", "content": chunk.content})
-                        
-            # 2. Update the UI with human-readable node labels as they start
-            elif kind == "on_chain_start":
-                name = event["name"]
-                if name.endswith("_node"):
-                    await emit({
-                        "type": "stage_start",
-                        "stage": name,
-                        "label": stage_label(name)
-                    })
-                    
-            # 3. Capture the final state output
-            elif kind == "on_chain_end":
-                if event["name"] == "LangGraph":
-                    out = event["data"].get("output")
-                    if isinstance(out, dict):
-                        graph_result = out
+            t_node = time.perf_counter()
+            await emit({"type": "stage_start", "stage": "l3_resolver_node", "label": stage_label("l3_resolver_node")})
+            out3 = await agent.l3_resolver_node(state)
+            state.update(out3)
+            await emit({"type": "stage_done", "stage": "l3_resolver_node", "ms": _ms(t_node)})
+
+            # Intelligent Retry Loop
+            while "fail" in str(state.get("action_taken", "")).lower() and state.get("retry_count", 0) <= 3:
+                t_node = time.perf_counter()
+                await emit({"type": "stage_start", "stage": "l2_investigator_node", "label": f"Retrying Investigation (#{state['retry_count']})"})
+                out2 = await agent.l2_investigator_node(state)
+                state.update(out2)
+                await emit({"type": "stage_done", "stage": "l2_investigator_node", "ms": _ms(t_node)})
+                
+                t_node = time.perf_counter()
+                await emit({"type": "stage_start", "stage": "l3_resolver_node", "label": f"Retrying Resolution (#{state['retry_count']})"})
+                out3 = await agent.l3_resolver_node(state)
+                state.update(out3)
+                await emit({"type": "stage_done", "stage": "l3_resolver_node", "ms": _ms(t_node)})
 
         lt_context = await lt_task
 
-        answer = graph_result.get("final_answer", "")
-        ticket_id = graph_result.get("ticket_id")
+        # 3. L4 Supervisor (Finalization & Synthesis)
+        t_node = time.perf_counter()
+        await emit({"type": "stage_start", "stage": "l4_supervisor_node", "label": stage_label("l4_supervisor_node")})
+        
+        # This will stream tokens directly via the emit callback passed in state
+        out4 = await agent.l4_supervisor_node(state)
+        state.update(out4)
+        
+        await emit({"type": "stage_done", "stage": "l4_supervisor_node", "ms": _ms(t_node)})
 
-        # If the graph didn't produce a final_answer, synthesise one
+        answer = state.get("final_answer", "")
+        ticket_id = state.get("ticket_id")
+
         if not answer:
             answer = (
-                graph_result.get("action_taken")
-                or graph_result.get("investigation_results")
+                state.get("action_taken")
+                or state.get("investigation_results")
                 or "I was unable to process your request. Please try again."
             )
 
     except Exception as exc:
-        logger.exception("LangGraph orchestrator failed: {}", exc)
+        logger.exception("Python Orchestrator failed: {}", exc)
         answer = f"I encountered an error processing your request: {exc}"
         ticket_id = None
 
@@ -441,6 +474,9 @@ async def _run_chat_pipeline(
         background.add_task(
             _store_turn_pair, st_store, req.user_id, req.session_id,
             req.message, answer,
+        )
+        background.add_task(
+            touch_session_sync, req.user_id, req.session_id
         )
         background.add_task(
             _maybe_distill, agent.distiller, st_store,
