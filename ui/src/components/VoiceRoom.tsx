@@ -151,7 +151,11 @@ export function VoiceRoom({ userId, sessionId, onClose, autoStart }: VoiceRoomPr
     setStatus("Disconnected");
   }, []);
 
+  const connectingRef = useRef(false);
+
   const start = useCallback(async () => {
+    if (connectingRef.current) return;
+    connectingRef.current = true;
     try {
       setStatus("Requesting access...");
       setBubbleState("thinking");
@@ -297,8 +301,10 @@ export function VoiceRoom({ userId, sessionId, onClose, autoStart }: VoiceRoomPr
       setConnected(false);
       setStatus(`Error: ${msg}`);
       setBubbleState("error");
+    } finally {
+      connectingRef.current = false;
     }
-  }, [userId, teardown, connected]);
+  }, [userId, teardown, connected, sessionId]);
 
   const toggleMute = useCallback(async () => {
     const room = roomRef.current;
@@ -330,7 +336,7 @@ export function VoiceRoom({ userId, sessionId, onClose, autoStart }: VoiceRoomPr
             ? "THINKING"
             : bubbleState === "error"
             ? "ERROR"
-            : "IDLE"
+            : "ZUUSWARM-AI VOICE ASSISTANT"
         }
       />
       <p className="voice-status">{status}</p>

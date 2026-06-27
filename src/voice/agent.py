@@ -63,31 +63,34 @@ async def _get_orchestrator() -> AgentOrchestrator:
 
 
 async def warm_start(orchestrator: AgentOrchestrator) -> None:
-    """Pre-warm the HTTPS connection pool to the fast LLM provider.
-
-    The first call to Groq / OpenRouter / OpenAI from a fresh process
-    pays ~300-700 ms for DNS + TLS handshake + HTTP/2 setup. If the
-    first user turn pays that, perceived first-token latency on call
-    #1 is much worse than calls #2+. We fire a tiny ``ainvoke`` here
-    at worker boot so the pool is hot before any real call arrives.
-
-    We deliberately call ``llm_fast`` directly (not the full graph or
-    even ``achat_stream_fast``) — the goal is to warm the network
-    path, not exercise application logic.
+    """Pre-warm the DB connections and the LangGraph decision pipeline.
+    
+    The first call to Groq / OpenRouter / Supabase from a fresh process
+    pays ~300-700 ms for DNS + TLS handshake + HTTP/2 setup. We fire a 
+    full dummy invocation here at worker boot so the pool is hot before 
+    any real call arrives, preventing timeouts on the first memory fetch.
     """
+    import asyncio
     try:
-        from langchain_core.messages import HumanMessage
-        llm = orchestrator.llm_fast or orchestrator.llm_chat
         t0 = time.perf_counter()
-        # ainvoke with `max_tokens=1` would be cheapest, but not all
-        # langchain_openai versions honour it via the constructor for
-        # post-hoc overrides. A 1-2 token reply works on all of them.
-        await llm.ainvoke(
-            [HumanMessage(content="hi")],
-            config={"tags": ["__warmup__"]},
-        )
+        
+        # 1. Warm up the DB connection pool (prevents 0.6s timeout on first memory fetch)
+        # We must use valid UUID formats to avoid PostgreSQL syntax errors!
+        dummy_uuid = "00000000-0000-0000-0000-000000000000"
+        await asyncio.to_thread(orchestrator.st_store.recent, dummy_uuid, dummy_uuid, 1)
+        
+        # 2. Warm up the LangGraph decision pipeline and LLM connection pool
+        await orchestrator.decision_graph.ainvoke({
+            "message": "hi",
+            "router_context": "",
+        })
+        
+        # 3. Warm up Langfuse observability client (prevents 7s DNS/TLS penalty)
+        from infrastructure.observability import get_langfuse
+        get_langfuse()
+        
         ms = int((time.perf_counter() - t0) * 1000)
-        logger.success(f"LLM connection warm — first call took {ms} ms")
+        logger.success(f"Full orchestrator warmup complete in {ms} ms")
     except Exception as e:
         logger.warning(f"Warm-up failed (non-fatal): {e}")
 
@@ -116,10 +119,11 @@ def build_voice_agent(
     record (for event handlers to update).
     """
     user_id = participant.identity or "unknown-user"
+    base_room_name = room_name.rsplit("_", 1)[0] if "_" in room_name else room_name
     session = _session_manager.get_or_create(
         participant_id=participant.identity,
         user_id=user_id,
-        room_name=room_name,
+        room_name=base_room_name,
     )
     logger.info(f"Participant joined: {user_id} → {session.session_id}")
 
@@ -169,9 +173,9 @@ async def create_and_start_agent(ctx: JobContext) -> AgentSession:
     lifecycle including event wiring and disconnect cleanup.
     """
     cfg = load_voice_config()
-    orchestrator = await _get_orchestrator()
-
     # Connect (audio only — we don't care about video tracks).
+    # MUST DO THIS IMMEDIATELY to prevent LiveKit Cloud from aborting the job
+    # if _get_orchestrator() takes longer than 30s!
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
 
     # Wait for the first remote participant.
@@ -183,6 +187,8 @@ async def create_and_start_agent(ctx: JobContext) -> AgentSession:
     except Exception as e:
         logger.info(f"Room disconnected or error waiting for participant: {e}")
         return None
+
+    orchestrator = await _get_orchestrator()
 
     agent, session = build_voice_agent(
         participant=participant,
@@ -265,6 +271,8 @@ async def create_and_start_agent(ctx: JobContext) -> AgentSession:
     def _on_disconnect(p: rtc.RemoteParticipant):
         if p.identity == participant.identity:
             _session_manager.end_session(p.identity)
+            logger.info("Participant disconnected. Disconnecting agent from room to allow fresh reconnect.")
+            asyncio.create_task(ctx.room.disconnect())
 
     # Go live.
     await agent_session.start(agent, room=ctx.room)

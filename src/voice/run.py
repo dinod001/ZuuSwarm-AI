@@ -40,7 +40,7 @@ from dotenv import find_dotenv, load_dotenv
 # import-time fails with "SUPABASE_DB_URL must be set" noise in the logs.
 load_dotenv(find_dotenv(usecwd=True))
 
-from livekit.agents import JobContext, WorkerOptions, cli
+from livekit.agents import JobContext, JobProcess, WorkerOptions, cli
 from loguru import logger
 
 # ── Plugin registration (MUST happen on the main thread) ──────────────────
@@ -71,6 +71,20 @@ async def entrypoint(ctx: JobContext) -> None:
     await create_and_start_agent(ctx)
 
 
+def prewarm_process(proc: JobProcess) -> None:
+    """Pre-warm the orchestrator and LLM models when the worker process starts,
+    so they are immediately ready when the first user connects."""
+    import asyncio
+    from voice.agent import _get_orchestrator
+
+    logger.info("Pre-warming voice worker process in background...")
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_get_orchestrator())
+    except RuntimeError:
+        asyncio.run(_get_orchestrator())
+
+
 def main() -> None:
     setup_logging()
     cfg = load_voice_config()
@@ -92,6 +106,7 @@ def main() -> None:
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
+            prewarm_fnc=prewarm_process,
             # Supabase connection test + pgvector check + schema validation
             # at import time can take 8–15s on cold start. Default is 10s,
             # which causes the worker to kill+respawn subprocesses in a loop.

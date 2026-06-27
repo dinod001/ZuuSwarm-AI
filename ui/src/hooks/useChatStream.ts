@@ -115,7 +115,7 @@ export function useChatStream(userId: string, sessionId: string) {
               }
               case 'action': {
                 if (data.action === 'open_voice') {
-                  window.dispatchEvent(new CustomEvent('zuuswarm:open_voice', { detail: { autoStart: true } }));
+                  window.dispatchEvent(new CustomEvent('zuuswarm:open_voice', { detail: { autoStart: !!data.autoStart } }));
                 }
                 break;
               }

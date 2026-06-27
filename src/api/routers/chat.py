@@ -401,7 +401,7 @@ async def _run_chat_pipeline(
 
         elif route in ("l4_voice", "voice"):
             await emit({"type": "stage_start", "stage": "l4_voice", "label": "Critical Outage: Escalating to Voice Protocol"})
-            await emit({"type": "action", "action": "open_voice"})
+            await emit({"type": "action", "action": "open_voice", "autoStart": True})
             state["final_answer"] = "I have detected a critical IT issue. Escalating to the Voice response team automatically. Please hold..."
 
         else: # l2_investigator

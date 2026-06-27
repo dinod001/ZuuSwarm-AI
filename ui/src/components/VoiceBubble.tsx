@@ -93,12 +93,12 @@ export function VoiceBubble({ state, amplitude, size = 240, label }: Props) {
   const glowAlpha = useTransform(smoothed, (a) => 0.10 + a * 0.45);
 
   return (
-    <div className="flex flex-col items-center gap-3 select-none">
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem', userSelect: 'none' }}>
       <svg
         width={size}
         height={size}
         viewBox={`0 0 ${size} ${size}`}
-        className="overflow-visible"
+        style={{ overflow: 'visible' }}
       >
         {/* Outer glow */}
         <motion.circle
@@ -141,7 +141,7 @@ export function VoiceBubble({ state, amplitude, size = 240, label }: Props) {
         />
       </svg>
       {label && (
-        <span className="text-xs uppercase tracking-widest text-slate-400">
+        <span style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.1em', color: '#94a3b8' }}>
           {label}
         </span>
       )}

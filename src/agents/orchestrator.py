@@ -231,12 +231,15 @@ class AgentOrchestrator:
                 valid_assets = "Unknown"
                 valid_services = "Unknown"
                 
+            memory_context = state.get("memory_context", "")
+            
             extract_prompt = (
-                f"Extract the affected asset or service name from this issue. If multiple, pick the main one.\n"
-                f"Output ONLY the exact name from the valid lists below, nothing else.\n\n"
+                f"Extract the affected asset or service name from this issue and conversation history.\n"
+                f"If multiple, pick the main one. Output ONLY the exact name from the valid lists below, nothing else.\n\n"
                 f"Valid Assets: {valid_assets}\n"
                 f"Valid Services: {valid_services}\n\n"
-                f"Issue: {user_message}"
+                f"Conversation History:\n{memory_context}\n\n"
+                f"Latest Issue/Message: {user_message}"
             )
             
             res = await self.router_llm.ainvoke([

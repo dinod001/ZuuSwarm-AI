@@ -106,6 +106,9 @@ class LangGraphLLMAdapter(LLM):
         extra_kwargs: NotGivenOr[dict[str, Any]] = NOT_GIVEN,
     ) -> "LangGraphLLMStream":
         """Called by LiveKit after STT produces a final transcript."""
+        # If the user speaks again while we are still thinking (before TTS starts),
+        # LiveKit calls chat() again. Cancel the old task so we don't get two voices.
+        self.cancel_current()
         return LangGraphLLMStream(
             llm=self,
             chat_ctx=chat_ctx,

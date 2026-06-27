@@ -99,7 +99,8 @@ async def issue_token(req: TokenRequest) -> TokenResponse:
         )
 
     identity = req.user_id or f"web-{uuid.uuid4().hex[:8]}"
-    room = req.room or f"voice-{uuid.uuid4().hex[:10]}"
+    base_room = req.room or f"voice-{uuid.uuid4().hex[:10]}"
+    room = f"{base_room}_{uuid.uuid4().hex[:6]}"
     display_name = req.name or identity
 
     grants = livekit_api.VideoGrants(

@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ChatWindow } from './components/ChatWindow';
 import { LoginScreen } from './components/LoginScreen';
+import { LandingPage } from './components/LandingPage';
 import { Sidebar } from './components/Sidebar';
 import { VoiceRoom } from './components/VoiceRoom';
-import { Phone, X } from 'lucide-react';
+import { Mic, X, Settings, Bell, HelpCircle, Clock, ChevronDown } from 'lucide-react';
 import './App.css';
 
 interface UserInfo {
@@ -12,6 +13,8 @@ interface UserInfo {
   email: string;
 }
 
+type AppView = 'landing' | 'login' | 'chat';
+
 function App() {
   const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -19,6 +22,13 @@ function App() {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [autoStartVoice, setAutoStartVoice] = useState(false);
+  const [view, setView] = useState<AppView>('landing');
+  const [currentTime, setCurrentTime] = useState(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   React.useEffect(() => {
     const handleOpenVoice = (e: any) => {
@@ -45,13 +55,14 @@ function App() {
       setUserInfo(data);
       const newSessionId = crypto.randomUUID();
       setSessionId(newSessionId);
+      setView('chat');
       
       // Optional: pre-warm the session
       fetch('http://localhost:8000/api/v1/sessions/warmup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_id: data.user_id, session_id: newSessionId })
-      }).catch(console.error);
+      }).catch(() => { /* non-critical */ });
       
     } catch (e: any) {
       setLoginError(e.message);
@@ -63,6 +74,7 @@ function App() {
   const handleLogout = () => {
     setUserInfo(null);
     setSessionId(null);
+    setView('landing');
   };
 
   const handleNewChat = () => {
@@ -73,22 +85,58 @@ function App() {
     setSessionId(sid);
   };
 
-  if (!userInfo || !sessionId) {
+  // ── LANDING PAGE ──
+  if (view === 'landing') {
+    return <LandingPage onGoToLogin={() => setView('login')} />;
+  }
+
+  // ── LOGIN SCREEN ──
+  if (view === 'login' && (!userInfo || !sessionId)) {
     return (
       <div style={{position: 'relative', width: '100%', height: '100%'}}>
-        <LoginScreen onLogin={handleLogin} />
-        {isLoggingIn && <div style={{position: 'absolute', top: '20px', left: '50%', transform: 'translateX(-50%)', color: 'rgba(255,255,255,0.7)'}}>Authenticating...</div>}
-        {loginError && <div style={{position: 'absolute', top: '50px', left: '50%', transform: 'translateX(-50%)', color: 'var(--accent-red)', background: 'rgba(20,20,20,0.8)', padding: '0.5rem 1rem', borderRadius: '4px'}}>{loginError}</div>}
+        <div className="ambient-orb-1" />
+        <div className="ambient-orb-2" />
+        <LoginScreen onLogin={handleLogin} onBack={() => setView('landing')} />
+        {isLoggingIn && (
+          <div style={{
+            position: 'absolute', top: '20px', left: '50%',
+            transform: 'translateX(-50%)',
+            color: 'rgba(255,255,255,0.7)',
+            zIndex: 20
+          }}>
+            Authenticating...
+          </div>
+        )}
+        {loginError && (
+          <div style={{
+            position: 'absolute', top: '50px', left: '50%',
+            transform: 'translateX(-50%)',
+            color: '#f87171',
+            background: 'rgba(20,15,40,0.9)',
+            padding: '0.5rem 1rem',
+            borderRadius: '8px',
+            border: '1px solid rgba(248,113,113,0.2)',
+            zIndex: 20
+          }}>
+            {loginError}
+          </div>
+        )}
       </div>
     );
   }
 
+  // ── MAIN CHAT APPLICATION ──
+  if (!userInfo || !sessionId) {
+    // Safety fallback — redirect to landing
+    return <LandingPage onGoToLogin={() => setView('login')} />;
+  }
+
   return (
     <div className="app-container">
-      <div className="ambient-orb-1"></div>
-      <div className="ambient-orb-2"></div>
+      <div className="ambient-orb-1" />
+      <div className="ambient-orb-2" />
       
-      <main style={{ flex: 1, display: 'flex', overflow: 'hidden', padding: '1.5rem', gap: '1.5rem', zIndex: 10 }}>
+      <main style={{ flex: 1, display: 'flex', overflow: 'hidden', padding: 'clamp(0.5rem, 1.5vh, 1rem)', gap: 'clamp(0.5rem, 1.5vh, 1rem)', zIndex: 10, minHeight: 0 }}>
         <Sidebar 
           userId={userInfo.user_id}
           currentSessionId={sessionId}
@@ -96,32 +144,83 @@ function App() {
           onNewChat={handleNewChat}
           onLogout={handleLogout}
         />
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: 'var(--glass-bg)', border: '1px solid var(--glass-border)', borderRadius: '24px', backdropFilter: 'blur(24px)', boxShadow: 'var(--glass-shadow)', overflow: 'hidden' }}>
-          <header className="header" style={{ margin: '0', borderRadius: '0', borderBottom: '1px solid var(--glass-border)', borderTop: 'none', borderLeft: 'none', borderRight: 'none', boxShadow: 'none' }}>
-            <img src="/logo.png" alt="ZuuSwarm AI Logo" className="logo" />
-            <span className="header-title">ZuuSwarm Operations</span>
+        <div style={{
+          flex: 1, display: 'flex', flexDirection: 'column',
+          background: 'var(--glass-bg)',
+          border: '1px solid var(--glass-border)',
+          borderRadius: '24px',
+          backdropFilter: 'blur(24px)',
+          boxShadow: 'var(--glass-shadow)',
+          overflow: 'hidden',
+          position: 'relative',
+          minHeight: 0
+        }}>
+          {/* Elegant soft animated background for the chat area */}
+          <div className="chat-elegant-bg" />
+          
+          <header className="header" style={{
+            margin: '0', borderRadius: '0',
+            borderBottom: '1px solid var(--glass-border)',
+            borderTop: 'none', borderLeft: 'none', borderRight: 'none',
+            boxShadow: 'none',
+            background: 'rgba(12, 16, 41, 0.4)',
+            backdropFilter: 'blur(12px)',
+            position: 'relative',
+            zIndex: 10,
+            padding: 'clamp(0.5rem, 1.5vh, 1rem) clamp(1rem, 2vw, 1.5rem)',
+            minHeight: 'clamp(50px, 8vh, 70px)'
+          }}>
+            <img src="/logo.png" alt="ZuuSwarm AI Logo" className="logo" style={{ height: 'clamp(20px, 3vh, 28px)' }} />
+            <span className="header-title" style={{ fontSize: 'clamp(0.9rem, 2vh, 1.05rem)', color: 'white' }}>ZuuSwarm Operations</span>
             
             <button
-              onClick={() => setVoiceOpen(true)}
-              style={{
-                display: 'flex', alignItems: 'center', gap: '8px', 
-                padding: '8px 16px', borderRadius: '20px', 
-                background: 'rgba(16, 185, 129, 0.15)', 
-                border: '1px solid rgba(16, 185, 129, 0.4)',
-                color: '#6ee7b7', cursor: 'pointer',
-                marginLeft: '16px', fontWeight: 500, fontSize: '0.85rem'
+              className="premium-voice-btn"
+              onClick={() => {
+                setAutoStartVoice(false);
+                setVoiceOpen(true);
               }}
               title="Talk to the assistant"
+              type="button"
             >
-              <Phone size={16} />
-              Voice
+              <div className="pulse-dot-green-small" />
+              <Mic size={14} />
+              Voice Connected
             </button>
 
-            <div style={{ marginLeft: 'auto', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-              Logged in as: <strong style={{ color: 'var(--text-primary)' }}>{userInfo.name}</strong>
+            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
+              {/* Realtime Clock */}
+              <div className="header-clock">
+                <Clock size={14} />
+                <span>
+                  {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                </span>
+                <span className="clock-date">
+                  {currentTime.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}
+                </span>
+              </div>
+
+              {/* Utility Icons */}
+              <div className="header-utilities">
+                <button className="util-btn" title="Notifications"><Bell size={18} /></button>
+                <button className="util-btn" title="Help"><HelpCircle size={18} /></button>
+                <button className="util-btn" title="Settings"><Settings size={18} /></button>
+              </div>
+
+              {/* User Chip */}
+              <div className="user-chip">
+                <div className="user-avatar">{userInfo.name.charAt(0).toUpperCase()}</div>
+                <div className="user-info-text">
+                  <span className="user-role">Administrator</span>
+                  <span className="user-name">{userInfo.name}</span>
+                </div>
+                <ChevronDown size={14} className="user-chevron" />
+              </div>
             </div>
           </header>
-          <ChatWindow userId={userInfo.user_id} sessionId={sessionId} key={sessionId} />
+          
+          <div style={{ flex: 1, position: 'relative', zIndex: 10, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <ChatWindow userId={userInfo.user_id} sessionId={sessionId} key={sessionId} />
+          </div>
         </div>
       </main>
 
@@ -129,17 +228,18 @@ function App() {
       {voiceOpen && (
         <div style={{
           position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 9999,
-          background: 'rgba(2, 6, 23, 0.85)', backdropFilter: 'blur(12px)',
+          background: 'rgba(6, 2, 15, 0.88)', backdropFilter: 'blur(12px)',
           display: 'flex', alignItems: 'center', justifyContent: 'center'
         }}>
           <button
             onClick={() => setVoiceOpen(false)}
             style={{
               position: 'absolute', top: '16px', right: '16px',
-              padding: '8px', borderRadius: '50%', background: '#1e293b',
+              padding: '8px', borderRadius: '50%', background: 'var(--bg-elevated)',
               color: '#e2e8f0', cursor: 'pointer', border: 'none'
             }}
             title="Close"
+            type="button"
           >
             <X size={18} />
           </button>

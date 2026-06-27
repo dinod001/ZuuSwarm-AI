@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Send, Sparkles } from 'lucide-react';
 
 interface ChatInputProps {
   onSend: (text: string) => void;
@@ -19,6 +20,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   return (
     <div className="input-area">
       <form className="input-glass" onSubmit={handleSubmit}>
+        <div className="input-prefix-icon">
+          <Sparkles size={18} />
+        </div>
         <input
           type="text"
           className="chat-input"
@@ -29,9 +33,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
           autoFocus
         />
         <button type="submit" className="send-btn" disabled={!text.trim() || disabled}>
-          <svg className="send-icon" viewBox="0 0 24 24">
-            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-          </svg>
+          <Send size={18} className="send-icon" />
         </button>
       </form>
     </div>

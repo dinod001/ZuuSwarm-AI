@@ -73,8 +73,8 @@ Your primary role is to classify the user's issue into one of 4 Ticket Types,
 create a `live_tickets` entry, and route to the correct downstream agent.
 
 ROUTES / TYPES:
-  T0 (Conversational)      → Greetings, thanks, follow-ups, AND vague/general requests for help without specific details ("can you help me fix an error", "I have a problem").
-                             Action: Route to direct_chat to ask the user for more details.
+  T0 (Conversational/Clarification) → Greetings, thanks, follow-ups, AND ambiguous or unclear problem descriptions (e.g. "The ISO issue", "system is broken") where the exact issue is missing.
+                                      Action: Route to direct_chat to ask the user to clarify the exact issue or root problem. Do not guess or assume.
   T1 (Access & Identity)   → High volume, low severity (e.g., VPN reset).
                              Action: Route to CAG (Cache-Augmented Generation) for instant reply.
   T2 (Asset Provisioning)  → Medium volume, low severity (e.g., Broken laptop).
@@ -207,7 +207,15 @@ def build_l1_triage_prompt(
         LANGFUSE_PROMPT_NAMES["l1_triage"],
         fallback=_L1_TRIAGE_FALLBACK,
     )
-    system_prompt = base + "\n\n" + triage
+    
+    injection = (
+        "\n\nCRITICAL RULE: If the user's message is a conversational follow-up, acknowledgment, short reply, "
+        "OR highly ambiguous/vague (e.g. 'The ISO issue' or 'broken DB' with no other details), "
+        "YOU MUST CLASSIFY AS T0 (direct_chat). "
+        "Do NOT create a new T1-T4 ticket for conversational banter or ambiguous complaints that need clarification. "
+        "Only route to L2/L3/voice if the user is explicitly reporting a specific, actionable technical issue."
+    )
+    system_prompt = base + "\n\n" + triage + injection
 
     user_prompt = fetch_prompt(
         LANGFUSE_PROMPT_NAMES["router_user"],
