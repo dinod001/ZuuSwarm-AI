@@ -43,7 +43,7 @@ function App() {
     setIsLoggingIn(true);
     setLoginError(null);
     try {
-      const res = await fetch('http://localhost:8000/api/v1/auth/login', {
+      const res = await fetch('/api/v1/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email })
@@ -58,7 +58,7 @@ function App() {
       setView('chat');
       
       // Optional: pre-warm the session
-      fetch('http://localhost:8000/api/v1/sessions/warmup', {
+      fetch('/api/v1/sessions/warmup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_id: data.user_id, session_id: newSessionId })

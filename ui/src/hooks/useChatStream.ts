@@ -20,7 +20,7 @@ export function useChatStream(userId: string, sessionId: string) {
     setMessages([]);
     if (!sessionId || !userId) return;
 
-    fetch(`http://localhost:8000/api/v1/sessions/${encodeURIComponent(sessionId)}/turns?user_id=${encodeURIComponent(userId)}`)
+    fetch(`/api/v1/sessions/${encodeURIComponent(sessionId)}/turns?user_id=${encodeURIComponent(userId)}`)
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (data && data.turns) {
@@ -46,7 +46,7 @@ export function useChatStream(userId: string, sessionId: string) {
 
     try {
       const startTime = Date.now();
-      const response = await fetch('http://localhost:8000/api/v1/chat/stream', {
+      const response = await fetch('/api/v1/chat/stream', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

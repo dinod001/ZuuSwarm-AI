@@ -1,11 +1,13 @@
 import asyncio
 import os
 import sys
+import pathlib
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
+from fastapi.staticfiles import StaticFiles
 
 # Ensure src/ is on the path regardless of launch cwd
 _SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -176,3 +178,18 @@ app.include_router(voice_router.router, prefix="/api/v1", tags=["Voice"])
 # app.include_router(crm_router.router, prefix="/api/v1/tools/crm", tags=["Tools - CRM"])
 # app.include_router(rag_router.router, prefix="/api/v1/tools/rag", tags=["Tools - RAG"])
 # app.include_router(memory_router.router, prefix="/api/v1/tools/memory", tags=["Tools - Memory"])
+
+# ── SPA static files ──────────────────────────────────────────────────
+_UI_DIST = pathlib.Path(__file__).resolve().parents[2] / "ui_dist"
+
+if _UI_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=str(_UI_DIST), html=True), name="spa")
+    logger.info(f"SPA mounted from {_UI_DIST}")
+else:
+    @app.get("/", tags=["System"])
+    async def root():
+        return {
+            "service": "ZuuSwarm AI API",
+            "version": app.version,
+            "docs": "/docs",
+        }

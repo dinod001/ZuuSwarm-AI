@@ -110,7 +110,8 @@ def main() -> None:
             # Supabase connection test + pgvector check + schema validation
             # at import time can take 8–15s on cold start. Default is 10s,
             # which causes the worker to kill+respawn subprocesses in a loop.
-            initialize_process_timeout=60.0,
+            # We increase it heavily (600s) to account for CPU ML model downloads.
+            initialize_process_timeout=600.0,
             # Don't pre-warm more than 1 subprocess — they all do the same
             # heavy import-time work and starve each other on a laptop.
             num_idle_processes=1,

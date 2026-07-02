@@ -54,6 +54,7 @@ from api.schemas import (
     SessionWarmupResponse,
     TurnItem,
 )
+from workers.enqueue import enqueue_chat_bookkeeping
 
 # Type alias for the SSE event emitter callback.
 EmitFn = Callable[[Dict[str, Any]], Awaitable[None]]
@@ -304,10 +305,17 @@ async def _run_chat_pipeline(
         await emit({"type": "tool_invoke", "route": "out_of_scope",
                     "label": tool_label("out_of_scope")})
 
-        background.add_task(
-            _store_turn_pair, st_store, req.user_id, req.session_id,
-            req.message, refusal,
+        enqueued = await enqueue_chat_bookkeeping(
+            user_id=req.user_id,
+            session_id=req.session_id,
+            user_message=req.message,
+            assistant_message=refusal,
         )
+        if not enqueued:
+            background.add_task(
+                _store_turn_pair, st_store, req.user_id, req.session_id,
+                req.message, refusal,
+            )
         background.add_task(
             touch_session_sync, req.user_id, req.session_id
         )
@@ -344,10 +352,17 @@ async def _run_chat_pipeline(
         
         await emit({"type": "stage_done", "stage": "direct_chat", "ms": 50})
         
-        background.add_task(
-            _store_turn_pair, st_store, req.user_id, req.session_id,
-            req.message, answer,
+        enqueued = await enqueue_chat_bookkeeping(
+            user_id=req.user_id,
+            session_id=req.session_id,
+            user_message=req.message,
+            assistant_message=answer,
         )
+        if not enqueued:
+            background.add_task(
+                _store_turn_pair, st_store, req.user_id, req.session_id,
+                req.message, answer,
+            )
         background.add_task(
             touch_session_sync, req.user_id, req.session_id
         )
@@ -469,19 +484,29 @@ async def _run_chat_pipeline(
             request.app.state, req.user_id, req.session_id,
             req.message, answer,
         )
-        # ST persistence happens in the graph's memory_save_node already,
-        # but we also do it here defensively in case the graph skipped it.
-        background.add_task(
-            _store_turn_pair, st_store, req.user_id, req.session_id,
-            req.message, answer,
+        enqueued = await enqueue_chat_bookkeeping(
+            user_id=req.user_id,
+            session_id=req.session_id,
+            user_message=req.message,
+            assistant_message=answer,
         )
+        
         background.add_task(
             touch_session_sync, req.user_id, req.session_id
         )
-        background.add_task(
-            _maybe_distill, agent.distiller, st_store,
-            req.user_id, req.session_id,
-        )
+        
+        if not enqueued:
+            # ST persistence happens in the graph's memory_save_node already,
+            # but we also do it here defensively in case the graph skipped it.
+            background.add_task(
+                _store_turn_pair, st_store, req.user_id, req.session_id,
+                req.message, answer,
+            )
+            background.add_task(
+                _maybe_distill, agent.distiller, st_store,
+                req.user_id, req.session_id,
+            )
+            
         # Warm the CAG cache for RAG-route answers (employee-agnostic)
         if route == "cag" and cag:
             background.add_task(_safe_cag_set, cag, req.message, answer)

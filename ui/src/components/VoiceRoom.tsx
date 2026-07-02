@@ -34,7 +34,7 @@ import { Mic, MicOff, PhoneOff } from "lucide-react";
 import VoiceBubble, { type BubbleState } from "./VoiceBubble";
 
 // Token endpoint exposed by FastAPI (`src/api/routers/voice.py`).
-const TOKEN_ENDPOINT = "http://localhost:8000/api/v1/voice/token";
+const TOKEN_ENDPOINT = "/api/v1/voice/token";
 
 interface TokenResponse {
   url: string;

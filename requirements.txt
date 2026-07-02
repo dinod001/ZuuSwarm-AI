@@ -137,3 +137,9 @@ pytest>=8.0.0                     # Testing framework
 pytest-asyncio>=0.23.0            # Async test support
 boto3>=1.28.0                     # python sdk for aws
 
+# ========================================
+# Background Worker (Production)
+# ========================================
+arq>=0.26.0                       # Async Redis-backed worker
+redis>=5.0.0                      # Redis client (transitive dep of arq, pinned for compose)
+

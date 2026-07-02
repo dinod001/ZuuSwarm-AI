@@ -72,6 +72,80 @@ def _default_title() -> str:
     return f"Conversation {now.strftime('%Y-%m-%d %H:%M')}"
 
 
+def _is_default_title(title: str) -> bool:
+    """True if the title still looks auto-generated ("Conversation 2026-…")."""
+    if not title:
+        return True
+    return title.startswith("Conversation ") and any(c.isdigit() for c in title)
+
+
+def maybe_auto_title_sync(
+    *,
+    session_id: str,
+    user_id: str,
+    st_store,
+    llm,
+    min_turns: int = 4,
+) -> None:
+    """
+    Generate a short LLM title from the conversation if the session's
+    title is still the auto-generated default and there's enough content
+    to summarise. Idempotent and silent on failure — never raises.
+    """
+    s = _session_db()
+    try:
+        row = s.get(ChatSession, session_id)
+        if row is None or not _is_default_title(row.title):
+            return  # session unknown OR already user/LLM-titled
+
+        try:
+            recent = st_store.recent(user_id, session_id, k=8)
+        except Exception:
+            return
+        if len(recent) < min_turns:
+            return
+
+        snippet_lines = []
+        for t in recent:
+            content = (t.content or "").replace("[interrupted]", "").strip()
+            if not content:
+                continue
+            snippet_lines.append(f"{t.role}: {content[:200]}")
+        snippet = "\n".join(snippet_lines)
+        if not snippet:
+            return
+
+        from langchain_core.messages import SystemMessage, HumanMessage
+        sys_msg = SystemMessage(content=(
+            "You write very short chat-window titles. Read the snippet "
+            "and reply with a 3-to-6-word title that captures the topic. "
+            "No quotes. No punctuation at the end. Title case."
+        ))
+        user_msg = HumanMessage(content=f"Conversation snippet:\n\n{snippet}")
+
+        try:
+            resp = llm.invoke([sys_msg, user_msg])
+            title = (getattr(resp, "content", None) or "").strip().strip('"').strip("'").strip()
+            if title.endswith("."):
+                title = title[:-1].strip()
+        except Exception as e:
+            logger.debug(f"auto-title LLM call failed: {e}")
+            return
+
+        if not title or len(title) > 80:
+            return
+
+        row.title = title
+        row.updated_at = int(time.time())
+        s.commit()
+        logger.info(f"auto-titled session {session_id} → {title!r}")
+    except Exception as exc:
+        logger.debug(f"maybe_auto_title_sync failed for {session_id}: {exc}")
+        s.rollback()
+    finally:
+        s.close()
+
+
 def touch_session_sync(employ_id: str, session_id: str) -> None:
     """
     Ensure a chat_sessions row exists for (employ_id, session_id) and

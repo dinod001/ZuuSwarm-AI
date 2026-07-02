@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, MessageSquare, LogOut, MoreVertical, Trash2, Check } from 'lucide-react';
+import { Plus, MessageSquare, LogOut, Trash2 } from 'lucide-react';
 
 interface ChatSessionMeta {
   session_id: string;
@@ -16,18 +16,6 @@ interface SidebarProps {
   onLogout: () => void;
 }
 
-function formatSessionDate(timestamp: number): string {
-  const date = new Date(timestamp * 1000);
-  const now = new Date();
-  const isToday = date.toDateString() === now.toDateString();
-  
-  if (isToday) {
-    return `Today, ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-  }
-  
-  return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
 export const Sidebar: React.FC<SidebarProps> = ({
   userId,
   currentSessionId,
@@ -37,12 +25,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const [sessions, setSessions] = useState<ChatSessionMeta[]>([]);
   const [loading, setLoading] = useState(true);
-  const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const fetchSessions = async () => {
     try {
-      const res = await fetch(`http://localhost:8000/api/v1/chat_sessions?user_id=${userId}`);
+      const res = await fetch(`/api/v1/chat_sessions?user_id=${userId}`);
       if (res.ok) {
         const data = await res.json();
         setSessions(data.sessions || []);
@@ -60,24 +46,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
     return () => clearInterval(interval);
   }, [userId]);
 
-  // Close menu on outside click
-  useEffect(() => {
-    const handleClick = () => setMenuOpenId(null);
-    if (menuOpenId) {
-      document.addEventListener('click', handleClick);
-      return () => document.removeEventListener('click', handleClick);
-    }
-  }, [menuOpenId]);
-
-  const toggleMenu = (e: React.MouseEvent, sessionId: string) => {
-    e.stopPropagation();
-    setMenuOpenId(menuOpenId === sessionId ? null : sessionId);
-  };
-
   const deleteSession = async (e: React.MouseEvent, sessionIdToDelete: string) => {
     e.stopPropagation();
     try {
-      const res = await fetch(`http://localhost:8000/api/v1/chat_sessions/${sessionIdToDelete}`, {
+      const res = await fetch(`/api/v1/chat_sessions/${sessionIdToDelete}`, {
         method: "DELETE"
       });
       if (res.ok) {
@@ -93,7 +65,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
       console.error("Delete error:", err);
       alert(`Delete error: ${err}`);
     }
-    setMenuOpenId(null);
   };
 
   return (

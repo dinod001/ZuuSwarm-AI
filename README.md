@@ -169,7 +169,16 @@ For **T4 (Critical Outage)** scenarios like a total system crash, the Swarm exec
 
 ## 🛠️ Usage
 
-### Running the Application
+### Running the Application (Production via Docker)
+
+To spin up the entire optimized production stack (API Replicas, Background Worker, Voice Agent, Redis, and Nginx Web Proxy):
+
+```bash
+docker compose -f compose.prod.yml up --build
+```
+The application will be accessible at `http://localhost:8080`.
+
+### Running the Application (Local Development)
 
 This project consists of two servers: the FastAPI backend and the React UI frontend.
 
